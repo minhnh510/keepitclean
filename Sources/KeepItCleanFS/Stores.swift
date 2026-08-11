@@ -452,7 +452,7 @@ final class SecureStateDirectory {
                     temporaryPointer,
                     descriptor.rawValue,
                     namePointer,
-                    UInt32(RENAME_EXCL | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH)
+                    UInt32(RENAME_EXCL | RENAME_NOFOLLOW_ANY)
                 )
             }
         }
@@ -501,7 +501,6 @@ final class SecureStateDirectory {
         let renameFlags = UInt32(
             (existingIdentity == nil ? RENAME_EXCL : RENAME_SWAP)
                 | RENAME_NOFOLLOW_ANY
-                | RENAME_RESOLVE_BENEATH
         )
         let renamed = temporary.withCString { temporaryPointer in
             name.withCString { namePointer in
@@ -663,7 +662,7 @@ final class SecureStateDirectory {
                     current.rawValue,
                     $0,
                     &metadata,
-                    AT_SYMLINK_NOFOLLOW | AT_RESOLVE_BENEATH | AT_REALDEV
+                    AT_SYMLINK_NOFOLLOW | AT_REALDEV
                 )
             }
             if lookup != 0 {
@@ -689,7 +688,7 @@ final class SecureStateDirectory {
                         current.rawValue,
                         $0,
                         &metadata,
-                        AT_SYMLINK_NOFOLLOW | AT_RESOLVE_BENEATH | AT_REALDEV
+                        AT_SYMLINK_NOFOLLOW | AT_REALDEV
                     )
                 }
                 guard lookup == 0 else {
@@ -821,7 +820,7 @@ final class SecureStateDirectory {
                 descriptor.rawValue,
                 $0,
                 &metadata,
-                AT_SYMLINK_NOFOLLOW | AT_RESOLVE_BENEATH | AT_REALDEV
+                AT_SYMLINK_NOFOLLOW | AT_REALDEV
             )
         }
         if result != 0, errno == ENOENT { return nil }
@@ -866,7 +865,7 @@ final class SecureStateDirectory {
                     temporaryPointer,
                     descriptor.rawValue,
                     destinationPointer,
-                    UInt32(RENAME_SWAP | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH)
+                    UInt32(RENAME_SWAP | RENAME_NOFOLLOW_ANY)
                 )
             }
         }

@@ -132,7 +132,7 @@ public struct FDRelativeFileSystem: Sendable {
                 parent.rawValue,
                 $0,
                 &metadata,
-                AT_SYMLINK_NOFOLLOW | AT_RESOLVE_BENEATH | AT_REALDEV
+                AT_SYMLINK_NOFOLLOW | AT_REALDEV
             )
         }
         if lookup != 0 {
@@ -621,7 +621,7 @@ public struct FDRelativeFileSystem: Sendable {
                 parent,
                 $0,
                 &metadata,
-                AT_SYMLINK_NOFOLLOW | AT_RESOLVE_BENEATH | AT_REALDEV
+                AT_SYMLINK_NOFOLLOW | AT_REALDEV
             )
         }
         guard result == 0 else {
@@ -722,7 +722,7 @@ public struct FDRelativeFileSystem: Sendable {
                 name: name,
                 displayPath: displayPath,
                 expectedIdentity: current,
-                flags: AT_SYMLINK_NOFOLLOW_ANY | AT_RESOLVE_BENEATH
+                flags: AT_SYMLINK_NOFOLLOW_ANY
             )
 
         case .regularFile:
@@ -737,7 +737,7 @@ public struct FDRelativeFileSystem: Sendable {
                 name: name,
                 displayPath: displayPath,
                 expectedIdentity: current,
-                flags: AT_SYMLINK_NOFOLLOW_ANY | AT_RESOLVE_BENEATH
+                flags: AT_SYMLINK_NOFOLLOW_ANY
             )
             let after = try identity(descriptor: opened.rawValue, path: displayPath)
             guard after.device == current.device,
@@ -807,7 +807,7 @@ public struct FDRelativeFileSystem: Sendable {
                 name: name,
                 displayPath: displayPath,
                 expectedIdentity: rebound,
-                flags: AT_REMOVEDIR | AT_SYMLINK_NOFOLLOW_ANY | AT_RESOLVE_BENEATH,
+                flags: AT_REMOVEDIR | AT_SYMLINK_NOFOLLOW_ANY,
                 compareStableOnly: true
             )
 
@@ -868,7 +868,7 @@ public struct FDRelativeFileSystem: Sendable {
                     sourcePointer,
                     destinationParent,
                     destinationPointer,
-                    UInt32(RENAME_EXCL | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH)
+                    UInt32(RENAME_EXCL | RENAME_NOFOLLOW_ANY)
                 )
             }
         }

@@ -85,6 +85,30 @@ private enum FDRelativeReadOnly {
         )
     }
 
+    /// Resolves an absolute path one component at a time through retained
+    /// directory descriptors. Absence is a normal result only when the kernel
+    /// reports `ENOENT`; permission, symlink, non-directory, and I/O failures
+    /// remain errors so callers cannot mistake an unreadable path for a
+    /// missing one.
+    static func identityIfPresent(atAbsolutePath rawPath: String) throws -> FileIdentity? {
+        let parsed = try ParsedReadOnlyPath(rawPath)
+        guard let basename = parsed.components.last else {
+            let root = try openFilesystemRoot()
+            return try identity(descriptor: root.rawValue, path: parsed.path)
+        }
+        guard let parent = try openDirectoryIfPresent(
+            Array(parsed.components.dropLast()),
+            displayPath: parentPath(of: parsed)
+        ) else {
+            return nil
+        }
+        return try identityAtIfPresent(
+            parent: parent.rawValue,
+            name: basename,
+            path: parsed.path
+        )
+    }
+
     static func openTraversalRoot(_ rawPath: String) throws -> OpenedTarget {
         let parsed = try ParsedReadOnlyPath(rawPath)
         guard let basename = parsed.components.last else {
@@ -134,6 +158,36 @@ private enum FDRelativeReadOnly {
             }
             guard descriptor >= 0 else {
                 throw openError(path: walked)
+            }
+            current = ReadOnlyFileDescriptor(descriptor)
+        }
+
+        let metadata = try identity(descriptor: current.rawValue, path: displayPath)
+        guard metadata.fileKind == .directory else {
+            throw KeepItCleanError.invalidPath("Not a directory: \(displayPath)")
+        }
+        return current
+    }
+
+    private static func openDirectoryIfPresent(
+        _ components: [String],
+        displayPath: String
+    ) throws -> ReadOnlyFileDescriptor? {
+        var current = try openFilesystemRoot()
+        var walked = ""
+        for component in components {
+            walked += "/\(component)"
+            let descriptor = component.withCString {
+                Darwin.openat(
+                    current.rawValue,
+                    $0,
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY
+                )
+            }
+            guard descriptor >= 0 else {
+                let code = errno
+                if code == ENOENT { return nil }
+                throw openError(path: walked, code: code)
             }
             current = ReadOnlyFileDescriptor(descriptor)
         }
@@ -201,6 +255,23 @@ private enum FDRelativeReadOnly {
         }
         guard result == 0 else {
             throw posixError("Unable to inspect \(path)")
+        }
+        return makeIdentity(metadata)
+    }
+
+    private static func identityAtIfPresent(
+        parent: Int32,
+        name: String,
+        path: String
+    ) throws -> FileIdentity? {
+        var metadata = stat()
+        let result = name.withCString {
+            Darwin.fstatat(parent, $0, &metadata, AT_SYMLINK_NOFOLLOW)
+        }
+        guard result == 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            throw posixError("Unable to inspect \(path)", code: code)
         }
         return makeIdentity(metadata)
     }
@@ -275,8 +346,7 @@ private enum FDRelativeReadOnly {
         return parent.isEmpty ? "/" : "/" + parent.joined(separator: "/")
     }
 
-    private static func openError(path: String) -> KeepItCleanError {
-        let code = errno
+    private static func openError(path: String, code: Int32 = errno) -> KeepItCleanError {
         if code == ELOOP {
             return .symbolicLink(path)
         }
@@ -315,6 +385,14 @@ private enum FDRelativeReadOnly {
     }
 }
 
+/// Readers used by mutation recovery must distinguish a proven `ENOENT` from
+/// every other lookup failure. This is deliberately separate from the broad
+/// `FileSystemReading.fileExists` convenience API so existing readers and
+/// scan-only test doubles remain source-compatible.
+protocol FileIdentityPresenceReading: FileSystemReading {
+    func identityIfPresent(at path: String) throws -> FileIdentity?
+}
+
 public final class LocalFileSystemReader: FileSystemReading, @unchecked Sendable {
     private let measurer: DiskUsageMeasurer
 
@@ -328,6 +406,10 @@ public final class LocalFileSystemReader: FileSystemReading, @unchecked Sendable
 
     public func identity(at path: String) throws -> FileIdentity {
         try Self.readIdentity(at: path)
+    }
+
+    public func identityIfPresent(at path: String) throws -> FileIdentity? {
+        try FDRelativeReadOnly.identityIfPresent(atAbsolutePath: path)
     }
 
     public func usage(at path: String) throws -> DiskUsage {
@@ -384,6 +466,8 @@ public final class LocalFileSystemReader: FileSystemReading, @unchecked Sendable
         UInt64(UInt32(bitPattern: device))
     }
 }
+
+extension LocalFileSystemReader: FileIdentityPresenceReading {}
 
 public struct DiskUsageMeasurer: Sendable {
     public let maximumEntries: Int

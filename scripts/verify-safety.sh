@@ -19,4 +19,12 @@ if rg -n 'Process\(|executableURL|\.run\(\)' Sources/KeepItCleanCLI Sources/Keep
     exit 1
 fi
 
+# These flags were added after the Xcode 16.2 / macOS 14 SDK baseline. They are
+# redundant here because every *at syscall receives one validated basename and
+# an already-opened parent directory descriptor.
+if rg -n 'AT_RESOLVE_BENEATH|RENAME_RESOLVE_BENEATH' Sources; then
+    echo "Post-macOS-14 resolve-beneath flag found in production sources." >&2
+    exit 1
+fi
+
 echo "Safety source checks passed."

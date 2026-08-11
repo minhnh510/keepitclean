@@ -800,8 +800,10 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
             throw KeepItCleanError.ownerMismatch(eligibleRoot)
         }
 
-        if targetMayBeMissing, !reader.fileExists(at: canonicalPath) {
-            return canonicalPath
+        if targetMayBeMissing {
+            guard try identityIfPresent(at: canonicalPath) != nil else {
+                return canonicalPath
+            }
         }
         let targetIdentity = try validateNoSymlinkAncestry(canonicalPath)
         guard targetIdentity.fileKind != .symbolicLink else {
@@ -835,18 +837,20 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
         )
     }
 
-    /// `LocalFileSystemReader` performs both probes through no-follow,
-    /// component-wise fd walks. Requiring absence twice at the snapshot level
-    /// avoids interpreting a lookup error or a concurrent appearance as a
-    /// recoverable move state.
+    /// Recovery accepts absence only from an exact fd-relative `ENOENT` probe.
+    /// A reader that cannot provide that distinction is rejected rather than
+    /// falling back to the fail-open `fileExists` convenience API.
     private func recoveryIdentityIfPresent(at path: String) throws -> FileIdentity? {
-        guard reader.fileExists(at: path) else { return nil }
-        do {
-            return try reader.identity(at: path)
-        } catch {
-            if reader.fileExists(at: path) { throw error }
-            throw KeepItCleanError.identityChanged(path)
+        try identityIfPresent(at: path)
+    }
+
+    private func identityIfPresent(at path: String) throws -> FileIdentity? {
+        guard let presenceReader = reader as? any FileIdentityPresenceReading else {
+            throw KeepItCleanError.unsupported(
+                "Filesystem reader cannot prove fd-relative path absence: \(path)"
+            )
         }
+        return try presenceReader.identityIfPresent(at: path)
     }
 
     /// `URL.standardizedFileURL` is lexical only; walk each real path component

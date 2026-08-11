@@ -34,6 +34,56 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(LocalFileSystemReader.normalizedDeviceID(signedDevice) == UInt64(UInt32.max))
 }
 
+@Test func fdRelativeIdentityIfPresentDistinguishesAbsenceFromLookupFailures() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let reader = LocalFileSystemReader()
+    let existing = root.appendingPathComponent("identity-present")
+    let missing = root.appendingPathComponent("identity-missing")
+    let link = root.appendingPathComponent("identity-link")
+    let regularParent = root.appendingPathComponent("not-a-directory")
+    try Data("present".utf8).write(to: existing)
+    try Data("regular parent".utf8).write(to: regularParent)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: existing)
+
+    let optionalPresent = try reader.identityIfPresent(at: existing.path)
+    let present = try #require(optionalPresent)
+    let direct = try reader.identity(at: existing.path)
+    #expect(present == direct)
+    #expect(try reader.identityIfPresent(at: missing.path) == nil)
+    #expect(try reader.identityIfPresent(at: link.path)?.fileKind == .symbolicLink)
+    #expect(throws: KeepItCleanError.self) {
+        _ = try reader.identityIfPresent(
+            at: regularParent.appendingPathComponent("child").path
+        )
+    }
+
+    let linkedParent = root.appendingPathComponent("linked-parent")
+    try FileManager.default.createSymbolicLink(at: linkedParent, withDestinationURL: root)
+    #expect(throws: KeepItCleanError.self) {
+        _ = try reader.identityIfPresent(
+            at: linkedParent.appendingPathComponent("identity-missing").path
+        )
+    }
+
+    if getuid() != 0 {
+        let denied = root.appendingPathComponent("denied", isDirectory: true)
+        try FileManager.default.createDirectory(at: denied, withIntermediateDirectories: false)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: denied.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: denied.path
+            )
+        }
+        #expect(throws: KeepItCleanError.self) {
+            _ = try reader.identityIfPresent(
+                at: denied.appendingPathComponent("must-not-look-missing").path
+            )
+        }
+    }
+}
+
 @Test func diskUsageDeduplicatesHardlinks() throws {
     let root = try temporaryRoot()
     defer { removeTemporaryRoot(root) }
@@ -916,6 +966,62 @@ private func removeTemporaryRoot(_ root: URL) {
     }
 }
 
+@Test func interruptedTrashApplyPropagatesPresenceProbeFailures() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let source = root.appendingPathComponent("recovery-probe-item")
+    try Data("reviewed".utf8).write(to: source)
+    let reader = LocalFileSystemReader()
+    let candidate = try fixtureCandidate(at: source, reader: reader)
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let mover = DirectoryTrashMover(trashDirectory: trash)
+    let store = JSONLOperationStore(logURL: root.appendingPathComponent("recovery-probe.jsonl"))
+    let operationID = UUID()
+    let plannedTrash = try mover.plannedTrashURL(
+        for: source,
+        operationID: operationID,
+        itemIndex: 0
+    )
+    let interrupted = OperationRecord(
+        id: operationID,
+        planID: UUID(),
+        kind: .trash,
+        state: .running,
+        items: [OperationItem(
+            candidateID: candidate.id,
+            originalPath: candidate.path,
+            resultingTrashPath: plannedTrash.path,
+            identity: try #require(candidate.identity),
+            status: .pending
+        )]
+    )
+    try store.append(operation: interrupted)
+
+    for failingPath in [plannedTrash.path, source.path] {
+        let failingReader = FailingPresenceProbeReader(
+            base: reader,
+            failingPath: failingPath
+        )
+        let gateway = FileMutationGateway(
+            validator: PathValidator(policy: PathValidationPolicy(
+                homePath: root.path,
+                allowedRoots: [root.path],
+                protectedSubtrees: []
+            )),
+            reader: failingReader,
+            mover: mover,
+            operationStore: store
+        )
+
+        #expect(throws: KeepItCleanError.self) {
+            _ = try gateway.recoverInterruptedTrashApply(operation: interrupted)
+        }
+        #expect(try store.operation(id: operationID) == interrupted)
+        #expect(reader.fileExists(at: source.path))
+        #expect(!reader.fileExists(at: plannedTrash.path))
+    }
+}
+
 private final class GatewayCheckpointAction: FDRelativeMutationObserving, @unchecked Sendable {
     private let target: FDRelativeMutationCheckpoint
     private let predicate: @Sendable (FDRelativeMutationContext) -> Bool
@@ -946,6 +1052,38 @@ private final class GatewayCheckpointAction: FDRelativeMutationObserving, @unche
         fired = true
         lock.unlock()
         try action(context)
+    }
+}
+
+private struct FailingPresenceProbeReader: FileIdentityPresenceReading, Sendable {
+    let base: LocalFileSystemReader
+    let failingPath: String
+
+    func fileExists(at path: String) -> Bool {
+        path == failingPath ? false : base.fileExists(at: path)
+    }
+
+    func identity(at path: String) throws -> FileIdentity {
+        try base.identity(at: path)
+    }
+
+    func identityIfPresent(at path: String) throws -> FileIdentity? {
+        guard path != failingPath else {
+            throw KeepItCleanError.io("injected fd-relative presence probe failure")
+        }
+        return try base.identityIfPresent(at: path)
+    }
+
+    func usage(at path: String) throws -> DiskUsage {
+        try base.usage(at: path)
+    }
+
+    func immediateChildren(at path: String) throws -> [String] {
+        try base.immediateChildren(at: path)
+    }
+
+    func readPrefix(at path: String, maxBytes: Int) throws -> Data {
+        try base.readPrefix(at: path, maxBytes: maxBytes)
     }
 }
 
