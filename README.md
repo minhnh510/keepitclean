@@ -55,7 +55,7 @@ keep completion SHELL
 keep --version
 ```
 
-`scan`, `analyze`, and `clean` without `--apply --trash` are read-only. The default scan is a fast top-level pass; `--deep` performs bounded recursive measurement for rule-backed candidates before review. `finalize` permanently removes only canonical Trash entries tied to both a reviewed private plan and one KeepItClean operation. Native actions are a separate workflow with an exact argv preview and per-action process gate. Inspection actions remain read-only; state-changing actions are non-undoable and require the generated confirmation token.
+`scan`, `analyze`, and `clean` without `--apply --trash` are read-only. The default scan is a fast top-level pass; `--deep` performs bounded recursive measurement for rule-backed candidates before review. `finalize` permanently removes only canonical Trash entries tied to both a reviewed private plan and one KeepItClean operation. Native-action `list` and `plan` provide an exact argv preview and per-action process policy, but production `run` fails closed in the v0.1 preview: Darwin has no public descriptor-bound `exec`, so launching a user-installed tool by pathname would reopen a TOCTOU window.
 
 The default TUI performs two reviews: a fast inventory selection, then a deep scan of only those exact candidates (or their evidence-bearing parent) before it creates a reviewed plan. Parameterized native action IDs are `colima.stop.<PROFILE>`, `android.avd-delete.<NAME>`, and `vscode.extension-uninstall.<PUBLISHER.NAME>`; use the corresponding read-only list/status action first.
 
@@ -67,10 +67,10 @@ The default TUI performs two reviews: a fast inventory selection, then a deep sc
 2. Build a short-lived versioned plan containing canonical path, device, inode, link count, owner, type, allocated/logical/reclaim estimates, modification time, and rule version. Stored plan IDs are create-only and are never overwritten.
 3. Review every selected candidate and its exclusion siblings. TUI review derives a new immutable plan ID.
 4. Re-run exact rule membership, identity, size, and active-state checks at the mutation boundary.
-5. Journal the operation, move user-space files to Trash, and persist each resulting location immediately.
-6. Verify outcomes. Undo or explicitly finalize later.
+5. Journal deterministic destinations before mutation, then move with descriptor-relative, no-follow, exclusive rename and verify the resulting identity.
+6. Reconcile an interrupted pre-journaled Trash move under the same lock, then undo with the fd-relative boundary or explicitly finalize through a separately journaled private quarantine.
 
-KeepItClean fails closed for symlinks, traversal, protected roots, mount roots, identity/reclaim drift, and data whose ownership or rebuildability cannot be established. Filesystem candidates and state-changing native actions that require inactivity also block on active or unknown owning-tool state. Exact read-only inspections, daemon-native Docker actions, and explicit Gradle/Colima stop actions use narrowly documented per-action policies.
+KeepItClean fails closed for symlinks, traversal, protected roots, mount roots, identity/reclaim drift, and data whose ownership or rebuildability cannot be established. Filesystem candidates block on active or unknown owning-tool state when inactivity is required. Native-action policies are fully reviewable, but execution remains disabled until it can preserve the same descriptor-bound security boundary.
 
 Protected examples include Codex sessions, memories, SQLite databases, credentials and worktree state; Android AVD userdata; Colima disks and volumes; local Maven artifacts; private CocoaPods repositories; and arbitrary Downloads content.
 

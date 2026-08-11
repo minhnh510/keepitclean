@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import KeepItCleanCore
 import KeepItCleanFS
@@ -248,15 +247,10 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
                 : "User Trash is not writable."
         ))
 
-        let available = NativeActionCatalog.allowedExecutables.sorted().filter {
-            (try? NativeExecutableResolver.resolve($0)) != nil
-        }
         checks.append(DoctorCheck(
-            id: "native-tools",
-            status: "ok",
-            message: available.isEmpty
-                ? "No optional native cleanup tools were found on PATH."
-                : "Available optional tools: \(available.joined(separator: ", "))."
+            id: "native-execution",
+            status: "blocked",
+            message: "Native-action run is intentionally disabled in v0.1 because macOS does not provide descriptor-bound exec; list and plan remain available."
         ))
         checks.append(DoctorCheck(
             id: "privileges",
@@ -330,19 +324,54 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
     /// duplicated, or cross-plan operation items before the mutation gateway
     /// is allowed to inspect Trash.
     private func validatedTrashOperation(id operationID: UUID) throws -> OperationRecord {
-        let operation = try operations.operation(id: operationID)
-        guard operation.schemaVersion == keepItCleanSchemaVersion,
-              operation.kind == .trash
-        else {
-            throw KeepItCleanError.unsupported("Only a recorded Trash operation can be restored or finalized.")
+        var operation = try operations.operation(id: operationID)
+        try validateTrashOperationProvenance(operation)
+
+        if operation.state == .running {
+            guard operation.completedAt == nil,
+                  operation.items.allSatisfy({
+                      $0.status == .pending
+                          || $0.status == .movedToTrash
+                          || $0.status == .failed
+                  })
+            else {
+                throw KeepItCleanError.unsupported(
+                    "Interrupted Trash APPLY has an invalid running state."
+                )
+            }
+            operation = try gateway.recoverInterruptedTrashApply(operation: operation)
+            // The reconciled record is persisted by the gateway. Re-run the
+            // complete private-plan proof before granting undo/finalize authority.
+            try validateTrashOperationProvenance(operation)
         }
+
         guard operation.state == .completed || operation.state == .partial else {
             throw KeepItCleanError.unsupported(
                 "Trash operation must be completed or partial before restore/finalize."
             )
         }
-        guard operation.completedAt != nil else {
-            throw KeepItCleanError.unsupported("Trash operation is missing its completion timestamp.")
+        guard operation.completedAt != nil,
+              operation.items.allSatisfy({
+                  $0.status == .movedToTrash || $0.status == .failed
+              })
+        else {
+            throw KeepItCleanError.unsupported(
+                "Trash operation has an invalid terminal state."
+            )
+        }
+        guard operation.items.contains(where: { $0.status == .movedToTrash }) else {
+            throw KeepItCleanError.unsupported("Trash operation contains no moved items.")
+        }
+        return operation
+    }
+
+    private func validateTrashOperationProvenance(
+        _ operation: OperationRecord
+    ) throws {
+        guard operation.schemaVersion == keepItCleanSchemaVersion,
+              operation.kind == .trash
+        else {
+            throw KeepItCleanError.unsupported("Only a recorded Trash operation can be restored or finalized.")
         }
         guard let planID = operation.planID else {
             throw KeepItCleanError.unsupported("Trash operation is missing its reviewed plan ID.")
@@ -360,22 +389,24 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
             )
         }
 
-        var reviewedByID: [String: Candidate] = [:]
+        var reviewedCandidates: [Candidate] = []
+        var reviewedIDs = Set<String>()
         var reviewedPaths = Set<String>()
         for item in plan.selectedItems {
             let candidate = item.candidate
             guard candidate.actionKind == .trash,
                   !candidate.isBlocked,
                   candidate.identity != nil,
-                  reviewedByID.updateValue(candidate, forKey: candidate.id) == nil,
+                  reviewedIDs.insert(candidate.id).inserted,
                   reviewedPaths.insert(candidate.path).inserted
             else {
                 throw KeepItCleanError.unsupported(
                     "Reviewed cleanup plan contains duplicate or ineligible candidates."
                 )
             }
+            reviewedCandidates.append(candidate)
         }
-        guard operation.items.count == reviewedByID.count else {
+        guard operation.items.count == reviewedCandidates.count else {
             throw KeepItCleanError.unsupported(
                 "Trash operation item count does not match the selected reviewed plan."
             )
@@ -384,8 +415,7 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
         var operationCandidateIDs = Set<String>()
         var operationPaths = Set<String>()
         var resultingTrashPaths = Set<String>()
-        var movedCount = 0
-        for item in operation.items {
+        for (index, item) in operation.items.enumerated() {
             guard operationCandidateIDs.insert(item.candidateID).inserted,
                   operationPaths.insert(item.originalPath).inserted
             else {
@@ -393,7 +423,8 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
                     "Trash operation contains duplicate candidate IDs or paths."
                 )
             }
-            guard let candidate = reviewedByID[item.candidateID],
+            let candidate = reviewedCandidates[index]
+            guard candidate.id == item.candidateID,
                   candidate.path == item.originalPath,
                   candidate.identity == item.identity
             else {
@@ -401,26 +432,21 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
                     "Trash operation item is not an exact selected reviewed candidate: \(item.originalPath)"
                 )
             }
-            if let trashPath = item.resultingTrashPath {
-                guard resultingTrashPaths.insert(trashPath).inserted else {
-                    throw KeepItCleanError.unsupported(
-                        "Trash operation contains duplicate Trash destinations."
-                    )
-                }
+            guard let trashPath = item.resultingTrashPath,
+                  resultingTrashPaths.insert(trashPath).inserted
+            else {
+                throw KeepItCleanError.unsupported(
+                    "Trash operation is missing a unique pre-journaled destination."
+                )
             }
-            if item.status == .movedToTrash {
-                guard item.resultingTrashPath != nil else {
-                    throw KeepItCleanError.unsupported(
-                        "Moved Trash operation item is missing its Trash destination."
-                    )
-                }
-                movedCount += 1
+            let expectedName =
+                ".keepitclean-\(operation.id.uuidString.lowercased())-\(index)"
+            guard URL(fileURLWithPath: trashPath).lastPathComponent == expectedName else {
+                throw KeepItCleanError.unsupported(
+                    "Trash operation destination is not bound to its exact item index."
+                )
             }
         }
-        guard movedCount > 0 else {
-            throw KeepItCleanError.unsupported("Trash operation contains no moved items.")
-        }
-        return operation
     }
 
     private func applyingProductProtections(_ input: ScanReport) -> ScanReport {
@@ -704,29 +730,16 @@ private struct NativeActionProcessPolicy: Sendable {
 }
 
 struct SystemNativeActionRunner: NativeActionRunning, Sendable {
-    private let operationStore: any OperationStoring
     private let host: any HostIdentifying
     private let preLaunchValidation: @Sendable (NativeActionDescriptor) throws -> Void
-    private let resolveExecutable: @Sendable (String) throws -> ResolvedNativeExecutable
-    private let revalidateExecutable: @Sendable (ResolvedNativeExecutable) throws -> Void
-    private let launchProcess: @Sendable (Process) throws -> Void
 
     init(
-        operationStore: any OperationStoring,
+        operationStore _: any OperationStoring,
         host: any HostIdentifying,
-        preLaunchValidation: @escaping @Sendable (NativeActionDescriptor) throws -> Void = { _ in },
-        resolveExecutable: @escaping @Sendable (String) throws -> ResolvedNativeExecutable =
-            NativeExecutableResolver.resolve,
-        revalidateExecutable: @escaping @Sendable (ResolvedNativeExecutable) throws -> Void =
-            NativeExecutableResolver.revalidate,
-        launchProcess: @escaping @Sendable (Process) throws -> Void = { try $0.run() }
+        preLaunchValidation: @escaping @Sendable (NativeActionDescriptor) throws -> Void = { _ in }
     ) {
-        self.operationStore = operationStore
         self.host = host
         self.preLaunchValidation = preLaunchValidation
-        self.resolveExecutable = resolveExecutable
-        self.revalidateExecutable = revalidateExecutable
-        self.launchProcess = launchProcess
     }
 
     func run(plan: NativeActionPlan, confirmationToken: String) throws -> OperationRecord {
@@ -744,147 +757,9 @@ struct SystemNativeActionRunner: NativeActionRunning, Sendable {
         guard NativeActionCatalog.isAllowlisted(plan.descriptor) else {
             throw KeepItCleanError.unsupported("Native action argv is not allowlisted.")
         }
-
-        let startedAt = Date()
-        let resolvedExecutable = try resolveExecutable(plan.descriptor.executable)
-        let executable = resolvedExecutable.url
-        var operation = OperationRecord(
-            planID: plan.id,
-            kind: .native,
-            state: .running,
-            startedAt: startedAt,
-            items: [OperationItem(
-                candidateID: plan.descriptor.id,
-                originalPath: executable.path,
-                identity: resolvedExecutable.identity,
-                status: .pending
-            )]
+        try preLaunchValidation(plan.descriptor)
+        throw KeepItCleanError.unsupported(
+            "Native-action execution is disabled in the v0.1 preview because macOS does not provide descriptor-bound exec. Use list/plan only."
         )
-
-        // A durable running record is the launch precondition. If journaling
-        // fails, no tool-managed state is allowed to change. Every later
-        // outcome appends the same operation UUID, so history lookup observes
-        // a stable state transition instead of unrelated records.
-        try operationStore.append(operation: operation)
-
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = executable
-        process.arguments = plan.descriptor.arguments
-        process.standardOutput = output
-        process.standardError = output
-
-        do {
-            try preLaunchValidation(plan.descriptor)
-            try revalidateExecutable(resolvedExecutable)
-            try launchProcess(process)
-        } catch {
-            operation.state = .failed
-            operation.completedAt = Date()
-            operation.items[0].status = .failed
-            operation.items[0].message = "Unable to launch: \(error.localizedDescription)"
-            try operationStore.append(operation: operation)
-            throw KeepItCleanError.io("Unable to launch native action: \(error.localizedDescription)")
-        }
-
-        let outputHandle = output.fileHandleForReading
-        defer { try? outputHandle.close() }
-        var data = Data()
-        do {
-            while let chunk = try outputHandle.read(upToCount: 32 * 1_024), !chunk.isEmpty {
-                if data.count < 4_096 {
-                    data.append(chunk.prefix(4_096 - data.count))
-                }
-            }
-        } catch {
-            terminateAndWait(process)
-            let message = "Unable to read native action output: \(error.localizedDescription)"
-            operation.state = .failed
-            operation.completedAt = Date()
-            operation.items[0].status = .failed
-            operation.items[0].message = message
-            try operationStore.append(operation: operation)
-            throw KeepItCleanError.io(message)
-        }
-        process.waitUntilExit()
-        let text = String(decoding: data, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let succeeded = process.terminationStatus == 0
-        let message = text.isEmpty
-            ? "Exit status \(process.terminationStatus)."
-            : "Exit status \(process.terminationStatus): \(text)"
-        operation.state = succeeded ? .completed : .failed
-        operation.completedAt = Date()
-        operation.items[0].status = succeeded ? .executed : .failed
-        operation.items[0].message = message
-        try operationStore.append(operation: operation)
-        guard succeeded else {
-            throw KeepItCleanError.io("Native action failed with exit status \(process.terminationStatus).")
-        }
-        return operation
-    }
-
-    private func terminateAndWait(_ process: Process) {
-        if process.isRunning {
-            process.terminate()
-            if process.isRunning {
-                _ = Darwin.kill(process.processIdentifier, SIGKILL)
-            }
-        }
-        process.waitUntilExit()
-    }
-
-}
-
-struct ResolvedNativeExecutable: Sendable {
-    let url: URL
-    let identity: FileIdentity
-}
-
-private enum NativeExecutableResolver {
-    static func resolve(_ executable: String) throws -> ResolvedNativeExecutable {
-        guard NativeActionCatalog.allowedExecutables.contains(executable),
-              !executable.contains("/"), !executable.isEmpty
-        else {
-            throw KeepItCleanError.unsupported("Executable is not allowlisted: \(executable)")
-        }
-
-        var directories = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            "/usr/bin",
-            "/bin",
-            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin",
-        ]
-        for key in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
-            if let sdk = ProcessInfo.processInfo.environment[key], sdk.hasPrefix("/") {
-                directories.append("\(sdk)/cmdline-tools/latest/bin")
-                directories.append("\(sdk)/tools/bin")
-            }
-        }
-
-        for directory in Array(Set(directories)).sorted() where directory.hasPrefix("/") {
-            let candidate = URL(fileURLWithPath: directory, isDirectory: true)
-                .appendingPathComponent(executable)
-            guard FileManager.default.isExecutableFile(atPath: candidate.path) else { continue }
-            let resolved = candidate.resolvingSymlinksInPath().standardizedFileURL
-            var value = stat()
-            guard resolved.path.withCString({ Darwin.lstat($0, &value) }) == 0,
-                  value.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
-                  value.st_uid == 0 || value.st_uid == getuid()
-            else { continue }
-            let identity = try LocalFileSystemReader().identity(at: resolved.path)
-            return ResolvedNativeExecutable(url: resolved, identity: identity)
-        }
-        throw KeepItCleanError.unsupported("Optional tool is not available: \(executable)")
-    }
-
-    static func revalidate(_ executable: ResolvedNativeExecutable) throws {
-        let current = try LocalFileSystemReader().identity(at: executable.url.path)
-        guard current.fileKind == .regularFile,
-              executable.identity.matchesForMutation(current)
-        else {
-            throw KeepItCleanError.identityChanged(executable.url.path)
-        }
     }
 }

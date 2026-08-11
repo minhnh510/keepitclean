@@ -111,3 +111,40 @@ private struct StoreFixture {
     }
     #expect(try store.loadPlan(at: url) == original)
 }
+
+@Test func operationStoreRejectsOneRecordLargerThanItsReadLimit() throws {
+    let fixture = try StoreFixture()
+    defer { try? fixture.remove() }
+    let log = fixture.root.appendingPathComponent("history/operations.jsonl")
+    let store = JSONLOperationStore(
+        logURL: log,
+        maximumRecords: 10,
+        maximumBytes: 1_024
+    )
+    let identity = FileIdentity(
+        device: 1,
+        inode: 2,
+        ownerID: 3,
+        fileKind: .regularFile,
+        logicalBytes: 1,
+        allocatedBytes: 1,
+        modifiedAt: Date(timeIntervalSince1970: 1)
+    )
+    let oversized = OperationRecord(
+        kind: .trash,
+        state: .running,
+        items: [OperationItem(
+            candidateID: "fixture",
+            originalPath: "/fixture",
+            identity: identity,
+            status: .failed,
+            message: String(repeating: "x", count: 2_048)
+        )]
+    )
+
+    #expect(throws: KeepItCleanError.self) {
+        try store.append(operation: oversized)
+    }
+    #expect(!FileManager.default.fileExists(atPath: log.path))
+    #expect(try store.operations(limit: 10).isEmpty)
+}

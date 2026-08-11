@@ -140,23 +140,6 @@ private final class RecordingOperationStore: OperationStoring, @unchecked Sendab
     }
 }
 
-private final class NativeProcessLaunchRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    var launchCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return count
-    }
-
-    func record() {
-        lock.lock()
-        count += 1
-        lock.unlock()
-    }
-}
-
 private let unrelatedProcessSnapshot = [
     ProcessRecord(executable: "/sbin/launchd", arguments: "/sbin/launchd"),
 ]
@@ -170,7 +153,10 @@ private struct RecordedTrashFixture {
     let operationStore: JSONLOperationStore
 }
 
-private func recordedTrashFixture(home: MarkerGuardedHome) throws -> RecordedTrashFixture {
+private func recordedTrashFixture(
+    home: MarkerGuardedHome,
+    interrupted: Bool = false
+) throws -> RecordedTrashFixture {
     let fixtureHomePath = home.url.standardizedFileURL.path
     let canonicalHome = URL(fileURLWithPath: fixtureHomePath.hasPrefix("/var/")
         ? "/private\(fixtureHomePath)"
@@ -178,9 +164,16 @@ private func recordedTrashFixture(home: MarkerGuardedHome) throws -> RecordedTra
     let originalDirectory = canonicalHome.appendingPathComponent("Caches", isDirectory: true)
     let originalURL = originalDirectory.appendingPathComponent("artifact.bin")
     let trashDirectory = canonicalHome.appendingPathComponent(".Trash", isDirectory: true)
-    let trashURL = trashDirectory.appendingPathComponent("artifact.bin")
+    let operationID = UUID()
+    let trashURL = trashDirectory.appendingPathComponent(
+        ".keepitclean-\(operationID.uuidString.lowercased())-0"
+    )
     try FileManager.default.createDirectory(at: originalDirectory, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: trashDirectory, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: trashDirectory.path
+    )
     try Data("fixture artifact".utf8).write(to: originalURL)
 
     let identity = try LocalFileSystemReader().identity(at: originalURL.path)
@@ -209,17 +202,18 @@ private func recordedTrashFixture(home: MarkerGuardedHome) throws -> RecordedTra
 
     try FileManager.default.moveItem(at: originalURL, to: trashURL)
     let operation = OperationRecord(
+        id: operationID,
         planID: plan.id,
         kind: .trash,
-        state: .completed,
+        state: interrupted ? .running : .completed,
         startedAt: now,
-        completedAt: now,
+        completedAt: interrupted ? nil : now,
         items: [OperationItem(
             candidateID: candidate.id,
             originalPath: originalURL.path,
             resultingTrashPath: trashURL.path,
             identity: identity,
-            status: .movedToTrash
+            status: interrupted ? .pending : .movedToTrash
         )]
     )
     let operationStore = JSONLOperationStore(
@@ -597,70 +591,77 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     }
 }
 
-@Test func nativeRunnerNeverLaunchesWhenRunningJournalCannotBeWritten() throws {
-    let executableURL = URL(fileURLWithPath: "/usr/bin/true")
-    let executableIdentity = try LocalFileSystemReader().identity(at: executableURL.path)
-    let operationStore = RecordingOperationStore(rejectAppends: true)
-    let launchRecorder = NativeProcessLaunchRecorder()
+@Test func productionNativeRunnerFailsClosedWithoutDescriptorBoundExec() throws {
+    let operationStore = RecordingOperationStore()
     let host = FixtureHost(id: "fixture-host")
     let plan = NativeActionPlan(
-        descriptor: NativeActionCatalog.dockerImagePrune.descriptor,
+        descriptor: NativeActionCatalog.dockerDiskUsage.descriptor,
         hostID: host.currentHostID(),
-        confirmationToken: "PRUNE DOCKER IMAGES"
+        confirmationToken: "INSPECT DOCKER"
     )
     let runner = SystemNativeActionRunner(
         operationStore: operationStore,
-        host: host,
-        resolveExecutable: { _ in
-            ResolvedNativeExecutable(url: executableURL, identity: executableIdentity)
-        },
-        revalidateExecutable: { _ in },
-        launchProcess: { _ in launchRecorder.record() }
+        host: host
     )
 
     #expect(throws: KeepItCleanError.self) {
         _ = try runner.run(plan: plan, confirmationToken: plan.confirmationToken)
     }
     #expect(operationStore.records.isEmpty)
-    #expect(launchRecorder.launchCount == 0)
 }
 
-@Test func nativeRunnerUpsertsStableJournalIDWhenLaunchFails() throws {
-    let executableURL = URL(fileURLWithPath: "/usr/bin/true")
-    let executableIdentity = try LocalFileSystemReader().identity(at: executableURL.path)
-    let operationStore = RecordingOperationStore()
-    let launchRecorder = NativeProcessLaunchRecorder()
-    let host = FixtureHost(id: "fixture-host")
-    let plan = NativeActionPlan(
-        descriptor: NativeActionCatalog.dockerImagePrune.descriptor,
-        hostID: host.currentHostID(),
-        confirmationToken: "PRUNE DOCKER IMAGES"
+@Test func undoRecoversInterruptedTrashApplyOnlyAfterPrivatePlanProvenanceValidation() throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let fixture = try recordedTrashFixture(home: home, interrupted: true)
+
+    let undone = try fixture.service.undo(operationID: fixture.operation.id)
+    let recovered = try fixture.operationStore.operation(id: fixture.operation.id)
+
+    #expect(recovered.kind == .trash)
+    #expect(recovered.state == .completed)
+    #expect(recovered.completedAt != nil)
+    #expect(recovered.items.first?.status == .movedToTrash)
+    #expect(undone.kind == .undo)
+    #expect(undone.state == .completed)
+    #expect(FileManager.default.fileExists(atPath: fixture.originalURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.trashURL.path))
+}
+
+@Test func finalizeRecoversInterruptedTrashApplyBeforeCapturingItsExactItem() throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let fixture = try recordedTrashFixture(home: home, interrupted: true)
+    let token = FileMutationGateway.finalizeToken(for: fixture.operation.id)
+
+    let finalized = try fixture.service.finalize(
+        operationID: fixture.operation.id,
+        confirmationToken: token
     )
-    let runner = SystemNativeActionRunner(
-        operationStore: operationStore,
-        host: host,
-        resolveExecutable: { _ in
-            ResolvedNativeExecutable(url: executableURL, identity: executableIdentity)
-        },
-        revalidateExecutable: { _ in },
-        launchProcess: { _ in
-            launchRecorder.record()
-            throw KeepItCleanError.io("fixture launch failure")
-        }
-    )
+    let recovered = try fixture.operationStore.operation(id: fixture.operation.id)
+
+    #expect(recovered.state == .completed)
+    #expect(recovered.items.first?.status == .movedToTrash)
+    #expect(finalized.kind == .finalize)
+    #expect(finalized.state == .completed)
+    #expect(!FileManager.default.fileExists(atPath: fixture.originalURL.path))
+    #expect(!FileManager.default.fileExists(atPath: fixture.trashURL.path))
+}
+
+@Test func interruptedTrashApplyRecoveryRejectsForgedPlanItemBeforeFilesystemReconciliation() throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let fixture = try recordedTrashFixture(home: home, interrupted: true)
+    var forged = fixture.operation
+    forged.items[0].candidateID = "forged-candidate"
+    try fixture.operationStore.append(operation: forged)
 
     #expect(throws: KeepItCleanError.self) {
-        _ = try runner.run(plan: plan, confirmationToken: plan.confirmationToken)
+        _ = try fixture.service.undo(operationID: forged.id)
     }
-
-    let records = operationStore.records
-    #expect(launchRecorder.launchCount == 1)
-    #expect(records.count == 2)
-    #expect(records.first?.id == records.last?.id)
-    #expect(records.first?.state == .running)
-    #expect(records.first?.items.first?.status == .pending)
-    #expect(records.last?.state == .failed)
-    #expect(records.last?.items.first?.status == .failed)
+    #expect(try fixture.operationStore.operation(id: forged.id) == forged)
+    #expect(!FileManager.default.fileExists(atPath: fixture.originalURL.path))
+    #expect(FileManager.default.fileExists(atPath: fixture.trashURL.path))
 }
 
 @Test func reviewedTrashOperationProvenanceAllowsLegitimateRecordToReachGateway() throws {

@@ -346,7 +346,7 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(try operationStore.operations(limit: 10).isEmpty)
 }
 
-@Test func directoryTrashMoverAvoidsSameNameCollisions() throws {
+@Test func directoryTrashMoverUsesPrejournaledDeterministicNames() throws {
     let root = try temporaryRoot()
     defer { removeTemporaryRoot(root) }
     let first = root.appendingPathComponent("first/cache", isDirectory: true)
@@ -373,9 +373,13 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(operation.state == .completed)
     #expect(destinations.count == 2)
     #expect(Set(destinations).count == 2)
-    #expect(destinations.allSatisfy { $0.hasPrefix(trash.path + "/") })
-    #expect(destinations.contains { URL(fileURLWithPath: $0).lastPathComponent == "cache" })
-    #expect(destinations.contains { URL(fileURLWithPath: $0).lastPathComponent.hasSuffix("-cache") })
+    let canonicalTrash = PathValidationPolicy.canonicalSystemAlias(trash.path)
+    let operationPrefix = ".keepitclean-\(operation.id.uuidString.lowercased())-"
+    #expect(destinations.allSatisfy { $0.hasPrefix(canonicalTrash + "/" + operationPrefix) })
+    #expect(Set(destinations.map { URL(fileURLWithPath: $0).lastPathComponent }) == [
+        operationPrefix + "0",
+        operationPrefix + "1",
+    ])
     #expect(operation.items.allSatisfy { $0.status == .movedToTrash })
 }
 
@@ -451,6 +455,10 @@ private func removeTemporaryRoot(_ root: URL) {
     defer { removeTemporaryRoot(root) }
     let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
     try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: trash.path
+    )
     let reader = LocalFileSystemReader()
     let gateway = fixtureGateway(root: root, trash: trash, reader: reader)
 
@@ -502,6 +510,10 @@ private func removeTemporaryRoot(_ root: URL) {
     defer { removeTemporaryRoot(root) }
     let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
     try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: trash.path
+    )
     let victim = root.appendingPathComponent("symlink-victim")
     try Data("preserve".utf8).write(to: victim)
     let link = trash.appendingPathComponent("forged-link")
@@ -564,6 +576,377 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(reader.fileExists(at: source.path))
     let trashChildren = (try? reader.immediateChildren(at: trash.path)) ?? []
     #expect(trashChildren.isEmpty)
+}
+
+@Test func gatewayApplyLeafSwapFailsClosedWithoutMovingReplacement() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let source = root.appendingPathComponent("reviewed-cache")
+    let capturedReviewed = root.appendingPathComponent("attacker-captured-reviewed-cache")
+    try Data("reviewed".utf8).write(to: source)
+
+    let reader = LocalFileSystemReader()
+    let candidate = try fixtureCandidate(at: source, reader: reader)
+    let canonicalSource = PathValidationPolicy.canonicalSystemAlias(source.path)
+    let observer = GatewayCheckpointAction(
+        target: .sourceVerifiedBeforeRename,
+        predicate: { $0.sourcePath == canonicalSource }
+    ) { _ in
+        try FileManager.default.moveItem(at: source, to: capturedReviewed)
+        try Data("replacement".utf8).write(to: source)
+    }
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let operationStore = JSONLOperationStore(logURL: root.appendingPathComponent("operations.jsonl"))
+    let gateway = FileMutationGateway(
+        validator: PathValidator(policy: PathValidationPolicy(
+            homePath: root.path,
+            allowedRoots: [root.path],
+            protectedSubtrees: []
+        )),
+        reader: reader,
+        mover: DirectoryTrashMover(
+            trashDirectory: trash,
+            fileSystem: FDRelativeFileSystem(observer: observer)
+        ),
+        operationStore: operationStore
+    )
+
+    let result = try gateway.applyTrash(
+        plan: CleanupPlan(
+            hostID: "fixture-host",
+            items: [CleanupPlanItem(candidate: candidate)]
+        ),
+        hostID: "fixture-host"
+    )
+    let plannedTrashPath = try #require(result.items.first?.resultingTrashPath)
+
+    #expect(result.state == .failed)
+    #expect(result.items.first?.status == .failed)
+    #expect(try String(contentsOf: source, encoding: .utf8) == "replacement")
+    #expect(try String(contentsOf: capturedReviewed, encoding: .utf8) == "reviewed")
+    #expect(!reader.fileExists(at: plannedTrashPath))
+    #expect(candidate.identity!.matchesForMutation(try reader.identity(at: capturedReviewed.path)))
+}
+
+@Test func gatewayFinalizeLeafSwapNeverDeletesReplacement() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let source = root.appendingPathComponent("finalize-race-cache")
+    try Data("reviewed".utf8).write(to: source)
+
+    let reader = LocalFileSystemReader()
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let initialGateway = fixtureGateway(root: root, trash: trash, reader: reader)
+    let trashed = try initialGateway.applyTrash(
+        plan: CleanupPlan(
+            hostID: "fixture-host",
+            items: [CleanupPlanItem(candidate: try fixtureCandidate(at: source, reader: reader))]
+        ),
+        hostID: "fixture-host"
+    )
+    let trashPath = try #require(trashed.items.first?.resultingTrashPath)
+    let capturedReviewed = root.appendingPathComponent("attacker-captured-trash-item")
+    let canonicalTrashPath = PathValidationPolicy.canonicalSystemAlias(trashPath)
+    let observer = GatewayCheckpointAction(
+        target: .sourceVerifiedBeforeRename,
+        predicate: { $0.sourcePath == canonicalTrashPath }
+    ) { _ in
+        try FileManager.default.moveItem(
+            at: URL(fileURLWithPath: trashPath),
+            to: capturedReviewed
+        )
+        try Data("replacement-must-survive".utf8).write(
+            to: URL(fileURLWithPath: trashPath)
+        )
+    }
+    let finalizeGateway = FileMutationGateway(
+        validator: PathValidator(policy: PathValidationPolicy(
+            homePath: root.path,
+            allowedRoots: [root.path],
+            protectedSubtrees: []
+        )),
+        reader: reader,
+        mover: DirectoryTrashMover(
+            trashDirectory: trash,
+            fileSystem: FDRelativeFileSystem(observer: observer)
+        ),
+        operationStore: JSONLOperationStore(logURL: root.appendingPathComponent("finalize.jsonl"))
+    )
+
+    let finalized = try finalizeGateway.finalize(
+        operation: trashed,
+        confirmationToken: FileMutationGateway.finalizeToken(for: trashed.id)
+    )
+    let quarantinePath = try #require(finalized.items.first?.resultingTrashPath)
+
+    #expect(finalized.state == .failed)
+    #expect(finalized.items.first?.status == .failed)
+    #expect(try String(contentsOf: URL(fileURLWithPath: trashPath), encoding: .utf8) == "replacement-must-survive")
+    #expect(try String(contentsOf: capturedReviewed, encoding: .utf8) == "reviewed")
+    #expect(!reader.fileExists(at: quarantinePath))
+    #expect(trashed.items[0].identity.matchesForMutation(try reader.identity(at: capturedReviewed.path)))
+}
+
+@Test func finalizeCaptureIntentRemainsJournaledWhenLaterAppendFails() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let source = root.appendingPathComponent("finalize-journal-cache")
+    try Data("reviewed".utf8).write(to: source)
+
+    let reader = LocalFileSystemReader()
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let trashed = try fixtureGateway(root: root, trash: trash, reader: reader).applyTrash(
+        plan: CleanupPlan(
+            hostID: "fixture-host",
+            items: [CleanupPlanItem(candidate: try fixtureCandidate(at: source, reader: reader))]
+        ),
+        hostID: "fixture-host"
+    )
+    let visibleTrashPath = try #require(trashed.items.first?.resultingTrashPath)
+    let failingStore = FailingAfterFirstAppendStore()
+    let finalizeGateway = FileMutationGateway(
+        validator: PathValidator(policy: PathValidationPolicy(
+            homePath: root.path,
+            allowedRoots: [root.path],
+            protectedSubtrees: []
+        )),
+        reader: reader,
+        mover: DirectoryTrashMover(trashDirectory: trash),
+        operationStore: failingStore
+    )
+
+    #expect(throws: KeepItCleanError.self) {
+        _ = try finalizeGateway.finalize(
+            operation: trashed,
+            confirmationToken: FileMutationGateway.finalizeToken(for: trashed.id)
+        )
+    }
+
+    let intent = try #require(try failingStore.operations(limit: 1).first)
+    let quarantinePath = try #require(intent.items.first?.resultingTrashPath)
+    #expect(intent.kind == .finalize)
+    #expect(intent.state == .running)
+    #expect(intent.items.first?.status == .pending)
+    #expect(!reader.fileExists(at: visibleTrashPath))
+    #expect(reader.fileExists(at: quarantinePath))
+    #expect(trashed.items[0].identity.matchesForMutation(try reader.identity(at: quarantinePath)))
+}
+
+@Test func interruptedTrashApplyRecoveryReconcilesExactMovedInodeAndPersistsTerminalRecord() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let source = root.appendingPathComponent("recovery-reviewed-item")
+    try Data("reviewed-recovery-inode".utf8).write(to: source)
+
+    let reader = LocalFileSystemReader()
+    let candidate = try fixtureCandidate(at: source, reader: reader)
+    let plan = CleanupPlan(
+        hostID: "fixture-host",
+        items: [CleanupPlanItem(candidate: candidate)]
+    )
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let mover = DirectoryTrashMover(trashDirectory: trash)
+    let operationStore = JSONLOperationStore(
+        logURL: root.appendingPathComponent("recovery-operations.jsonl")
+    )
+    let gateway = FileMutationGateway(
+        validator: PathValidator(policy: PathValidationPolicy(
+            homePath: root.path,
+            allowedRoots: [root.path],
+            protectedSubtrees: []
+        )),
+        reader: reader,
+        mover: mover,
+        operationStore: operationStore
+    )
+    let operationID = UUID()
+    let plannedTrash = try mover.plannedTrashURL(
+        for: source,
+        operationID: operationID,
+        itemIndex: 0
+    )
+    let interrupted = OperationRecord(
+        id: operationID,
+        planID: plan.id,
+        kind: .trash,
+        state: .running,
+        items: [OperationItem(
+            candidateID: candidate.id,
+            originalPath: candidate.path,
+            resultingTrashPath: plannedTrash.path,
+            identity: try #require(candidate.identity),
+            status: .pending
+        )]
+    )
+    try operationStore.append(operation: interrupted)
+    do {
+        let operationLock = try mover.acquireOperationLock()
+        defer { withExtendedLifetime(operationLock) {} }
+        _ = try mover.moveToTrash(
+            source,
+            to: plannedTrash,
+            expectedIdentity: try #require(candidate.identity)
+        )
+    }
+
+    let recovered = try gateway.recoverInterruptedTrashApply(operation: interrupted)
+    let persisted = try operationStore.operation(id: operationID)
+
+    #expect(recovered.state == .completed)
+    #expect(recovered.completedAt != nil)
+    #expect(recovered.items.first?.status == .movedToTrash)
+    #expect(persisted == recovered)
+    #expect(!reader.fileExists(at: source.path))
+    #expect(try #require(candidate.identity).matchesForMutation(
+        try reader.identity(at: plannedTrash.path)
+    ))
+}
+
+@Test func interruptedTrashApplyRecoveryFailsClosedForMismatchAndMissingBothPaths() throws {
+    do {
+        let root = try temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let source = root.appendingPathComponent("recovery-mismatch-item")
+        let captured = root.appendingPathComponent("captured-reviewed-item")
+        try Data("reviewed".utf8).write(to: source)
+        let reader = LocalFileSystemReader()
+        let candidate = try fixtureCandidate(at: source, reader: reader)
+        let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+        let mover = DirectoryTrashMover(trashDirectory: trash)
+        let store = JSONLOperationStore(logURL: root.appendingPathComponent("recovery.jsonl"))
+        let operationID = UUID()
+        let plannedTrash = try mover.plannedTrashURL(
+            for: source,
+            operationID: operationID,
+            itemIndex: 0
+        )
+        let interrupted = OperationRecord(
+            id: operationID,
+            planID: UUID(),
+            kind: .trash,
+            state: .running,
+            items: [OperationItem(
+                candidateID: candidate.id,
+                originalPath: candidate.path,
+                resultingTrashPath: plannedTrash.path,
+                identity: try #require(candidate.identity),
+                status: .pending
+            )]
+        )
+        try store.append(operation: interrupted)
+        do {
+            let operationLock = try mover.acquireOperationLock()
+            defer { withExtendedLifetime(operationLock) {} }
+            _ = try mover.moveToTrash(
+                source,
+                to: plannedTrash,
+                expectedIdentity: try #require(candidate.identity)
+            )
+        }
+        try FileManager.default.moveItem(at: plannedTrash, to: captured)
+        try Data("replacement-must-survive".utf8).write(to: plannedTrash)
+        let gateway = FileMutationGateway(
+            validator: PathValidator(policy: PathValidationPolicy(
+                homePath: root.path,
+                allowedRoots: [root.path],
+                protectedSubtrees: []
+            )),
+            reader: reader,
+            mover: mover,
+            operationStore: store
+        )
+
+        #expect(throws: KeepItCleanError.self) {
+            _ = try gateway.recoverInterruptedTrashApply(operation: interrupted)
+        }
+        #expect(try store.operation(id: operationID) == interrupted)
+        #expect(try String(contentsOf: plannedTrash, encoding: .utf8) == "replacement-must-survive")
+        #expect(try String(contentsOf: captured, encoding: .utf8) == "reviewed")
+    }
+
+    do {
+        let root = try temporaryRoot()
+        defer { removeTemporaryRoot(root) }
+        let source = root.appendingPathComponent("recovery-missing-item")
+        let captured = root.appendingPathComponent("captured-missing-item")
+        try Data("reviewed".utf8).write(to: source)
+        let reader = LocalFileSystemReader()
+        let candidate = try fixtureCandidate(at: source, reader: reader)
+        let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+        let mover = DirectoryTrashMover(trashDirectory: trash)
+        let store = JSONLOperationStore(logURL: root.appendingPathComponent("recovery.jsonl"))
+        let operationID = UUID()
+        let plannedTrash = try mover.plannedTrashURL(
+            for: source,
+            operationID: operationID,
+            itemIndex: 0
+        )
+        let interrupted = OperationRecord(
+            id: operationID,
+            planID: UUID(),
+            kind: .trash,
+            state: .running,
+            items: [OperationItem(
+                candidateID: candidate.id,
+                originalPath: candidate.path,
+                resultingTrashPath: plannedTrash.path,
+                identity: try #require(candidate.identity),
+                status: .pending
+            )]
+        )
+        try store.append(operation: interrupted)
+        try FileManager.default.moveItem(at: source, to: captured)
+        let gateway = FileMutationGateway(
+            validator: PathValidator(policy: PathValidationPolicy(
+                homePath: root.path,
+                allowedRoots: [root.path],
+                protectedSubtrees: []
+            )),
+            reader: reader,
+            mover: mover,
+            operationStore: store
+        )
+
+        #expect(throws: KeepItCleanError.self) {
+            _ = try gateway.recoverInterruptedTrashApply(operation: interrupted)
+        }
+        #expect(try store.operation(id: operationID) == interrupted)
+        #expect(try String(contentsOf: captured, encoding: .utf8) == "reviewed")
+        #expect(!reader.fileExists(at: plannedTrash.path))
+    }
+}
+
+private final class GatewayCheckpointAction: FDRelativeMutationObserving, @unchecked Sendable {
+    private let target: FDRelativeMutationCheckpoint
+    private let predicate: @Sendable (FDRelativeMutationContext) -> Bool
+    private let action: @Sendable (FDRelativeMutationContext) throws -> Void
+    private let lock = NSLock()
+    private var fired = false
+
+    init(
+        target: FDRelativeMutationCheckpoint,
+        predicate: @escaping @Sendable (FDRelativeMutationContext) -> Bool = { _ in true },
+        action: @escaping @Sendable (FDRelativeMutationContext) throws -> Void
+    ) {
+        self.target = target
+        self.predicate = predicate
+        self.action = action
+    }
+
+    func reached(
+        _ checkpoint: FDRelativeMutationCheckpoint,
+        context: FDRelativeMutationContext
+    ) throws {
+        guard checkpoint == target, predicate(context) else { return }
+        lock.lock()
+        guard !fired else {
+            lock.unlock()
+            return
+        }
+        fired = true
+        lock.unlock()
+        try action(context)
+    }
 }
 
 private final class FailingAfterFirstAppendStore: OperationStoring, @unchecked Sendable {

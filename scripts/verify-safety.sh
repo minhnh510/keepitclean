@@ -9,8 +9,13 @@ if rg -n '(/bin/(ba)?sh|/usr/bin/sudo|ProcessInfo\.processInfo\.environment\["HO
     exit 1
 fi
 
-if rg -n 'FileManager\.default\.removeItem' Sources --glob '!**/MutationGateway.swift'; then
-    echo "Direct FileManager.removeItem must stay inside MutationGateway.swift." >&2
+if rg -n 'FileManager\.default\.(createDirectory|removeItem|moveItem|trashItem)|contentsOfDirectory\(atPath:' Sources; then
+    echo "Foundation pathname mutation or pathname-stack traversal found in production sources." >&2
+    exit 1
+fi
+
+if rg -n 'Process\(|executableURL|\.run\(\)' Sources/KeepItCleanCLI Sources/KeepItCleanFS; then
+    echo "Native process launch found inside the CLI/filesystem mutation boundary." >&2
     exit 1
 fi
 

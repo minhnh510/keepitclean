@@ -5,7 +5,7 @@ import KeepItCleanCore
 struct NativeActionCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "native-action",
-        abstract: "Review or run an allowlisted tool-native action.",
+        abstract: "Review allowlisted tool-native actions; execution is disabled in the v0.1 preview.",
         subcommands: [
             NativeActionListCommand.self,
             NativeActionPlanCommand.self,
@@ -16,7 +16,7 @@ struct NativeActionCommand: AsyncParsableCommand {
 
 struct NativeActionListCommand: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "list", abstract: "List allowlisted actions.")
-    private static let parameterizedHint = "Parameterized actions use exact IDs: colima.stop.<PROFILE>, android.avd-delete.<NAME>, and vscode.extension-uninstall.<PUBLISHER.NAME>. Run the corresponding read-only status/list action first."
+    private static let parameterizedHint = "Parameterized actions use exact IDs: colima.stop.<PROFILE>, android.avd-delete.<NAME>, and vscode.extension-uninstall.<PUBLISHER.NAME>. Review the corresponding read-only status/list plan first."
 
     @Flag(name: .long, help: "Emit the versioned JSON schema.")
     var json = false
@@ -65,7 +65,7 @@ struct NativeActionPlanCommand: ParsableCommand {
         let isReadOnly = service.nativeActionIsReadOnly(actionID: actionID) ?? false
         let warnings = isReadOnly
             ? []
-            : ["Tool-native changes may be non-undoable. Review executable, argv, and affected state before run."]
+            : ["Tool-native changes may be non-undoable. Review executable, argv, and affected state; production execution is disabled in v0.1."]
         if json {
             try CLIOutput.json(
                 command: "native-action plan",
@@ -89,7 +89,7 @@ struct NativeActionPlanCommand: ParsableCommand {
 }
 
 struct NativeActionRunCommand: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "run", abstract: "Run one reviewed native-action plan.")
+    static let configuration = CommandConfiguration(commandName: "run", abstract: "Fail closed in v0.1; descriptor-bound process launch is unavailable on macOS.")
 
     @Option(name: .long, help: "Native-action plan UUID or path.")
     var plan: String

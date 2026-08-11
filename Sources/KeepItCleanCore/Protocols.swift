@@ -38,6 +38,7 @@ public protocol OperationStoring: Sendable {
 
 public protocol MutationGateway: Sendable {
     func applyTrash(plan: CleanupPlan, hostID: String) throws -> OperationRecord
+    func recoverInterruptedTrashApply(operation: OperationRecord) throws -> OperationRecord
     func undo(operation: OperationRecord) throws -> OperationRecord
     func finalize(operation: OperationRecord, confirmationToken: String) throws -> OperationRecord
 }
