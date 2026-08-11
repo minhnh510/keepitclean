@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible KeepItClean scan, plan, TUI, or build problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report path-validation or unintended-deletion vulnerabilities here. Use GitHub private vulnerability reporting as described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: KeepItClean version
+      placeholder: KeepItClean 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and architecture
+      placeholder: macOS 14.7, arm64
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command and output
+      description: Redact usernames and private paths when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I did not include credentials, private file contents, or an active security vulnerability.
+          required: true

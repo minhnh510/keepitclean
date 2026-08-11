@@ -1,76 +1,24 @@
-# Security Policy
+# Security policy
 
-Mole is a local system maintenance tool. It includes high-risk operations such as cleanup, uninstall, optimization, and artifact removal. We treat safety boundaries, deletion logic, and release integrity as security-sensitive areas.
+KeepItClean performs destructive local operations only after an explicit reviewed plan. Path validation, mutation boundaries, native command execution, and release integrity are security-sensitive.
 
-## Reporting a Vulnerability
+## Report a vulnerability
 
-Please report suspected security issues privately.
+Please use GitHub private vulnerability reporting for `minhnh510/keepitclean`. Do not publish an unpatched path-validation, symlink, TOCTOU, privilege, or unintended-deletion issue in a public ticket.
 
-- Email: `hitw93@gmail.com`
-- Subject line: `Mole security report`
+Include the KeepItClean version, macOS version, exact command, plan identifier, reproduction steps, and whether the issue involves a symlink, mount, identity change, Trash, undo, finalize, or native action.
 
-Do not open a public GitHub issue for an unpatched vulnerability.
+## Security boundaries
 
-If GitHub Security Advisories private reporting is enabled for the repository, you may use that channel instead of email.
+- No daemon, privileged helper, `sudo`, shell interpolation, or telemetry.
+- Scans never mutate files.
+- User-facing mutations pass through one gateway and default to Trash.
+- Native actions use a fixed executable plus argv allowlist and are never inferred from filesystem names.
+- Unknown reference or ownership state is blocked. Filesystem candidates and native mutations that require an inactive owning tool also block on active or unknown process state.
+- Exact read-only inspections bypass activity gates; explicit Gradle/Colima stop actions allow the process they are stopping, and Docker daemon-native actions validate their own exact catalog policy.
+- Plans expire after 30 minutes and are bound to the host and file identities observed during scan.
+- Permanent finalization is limited to recorded Trash destinations that still match their operation record.
 
-Include as much of the following as possible:
+The v0.1 preview detects identity drift at the mutation boundary but does not promise atomic isolation from a malicious concurrent process with the same macOS user ID; see the documented concurrency boundary before enabling mutations.
 
-- Mole version and install method
-- macOS version
-- Exact command or workflow involved
-- Reproduction steps or proof of concept
-- Whether the issue involves deletion boundaries, symlinks, sudo, path validation, or release/install integrity
-
-## Response Expectations
-
-- We aim to acknowledge new reports within 7 calendar days.
-- We aim to provide a status update within 30 days if a fix or mitigation is not yet available.
-- We will coordinate disclosure after a fix, mitigation, or clear user guidance is ready.
-
-Response times are best-effort for a maintainer-led open source project, but security reports are prioritized over normal bug reports.
-
-## Supported Versions
-
-Security fixes are only guaranteed for:
-
-- The latest published release
-- The current `main` branch
-
-Older releases may not receive security fixes. Users running high-risk commands should stay current.
-
-## What We Consider a Security Issue
-
-Examples of security-relevant issues include:
-
-- Path validation bypasses
-- Deletion outside intended cleanup boundaries
-- Unsafe handling of symlinks or path traversal
-- Unexpected privilege escalation or unsafe sudo behavior
-- Sensitive data removal that bypasses documented protections
-- Release, installation, update, or checksum integrity issues
-- Vulnerabilities in logic that can cause unintended destructive behavior
-
-## What Usually Does Not Qualify
-
-The following are usually normal bugs, feature requests, or documentation issues rather than security issues:
-
-- Cleanup misses that leave recoverable junk behind
-- False negatives where Mole refuses to clean something
-- Cosmetic UI problems
-- Requests for broader or more aggressive cleanup behavior
-- Compatibility issues without a plausible security impact
-
-If you are unsure whether something is security-relevant, report it privately first.
-
-## Security-Focused Areas in Mole
-
-The project pays particular attention to:
-
-- Destructive command boundaries
-- Path validation and protected-directory rules
-- Sudo and privilege boundaries
-- Symlink and path traversal handling
-- Sensitive data exclusions
-- Packaging, release artifacts, checksums, and update/install flows
-
-For the current technical design and known limitations, see [SECURITY_AUDIT.md](SECURITY_AUDIT.md).
+See [docs/SECURITY_DESIGN.md](docs/SECURITY_DESIGN.md) for the threat model and verification layers.

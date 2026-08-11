@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Swift version
+        run: swift --version
+      - name: Resolve dependencies
+        run: swift package resolve
+      - name: Test
+        run: swift test
+      - name: Release build
+        run: swift build -c release
+      - name: Safety checks
+        run: ./scripts/verify-safety.sh
+      - name: CLI smoke checks
+        run: ./scripts/smoke-cli.sh
+      - name: Installer ownership checks
+        run: ./scripts/test-installer.sh
