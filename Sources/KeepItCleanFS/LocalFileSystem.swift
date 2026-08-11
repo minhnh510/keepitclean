@@ -76,7 +76,7 @@ public final class LocalFileSystemReader: FileSystemReading, @unchecked Sendable
         let allocatedBytes = UInt64(max(0, value.st_blocks)) &* 512
         let linkCount = UInt64(value.st_nlink)
         return FileIdentity(
-            device: UInt64(value.st_dev),
+            device: normalizedDeviceID(value.st_dev),
             inode: UInt64(value.st_ino),
             ownerID: value.st_uid,
             fileKind: kind,
@@ -86,6 +86,13 @@ public final class LocalFileSystemReader: FileSystemReading, @unchecked Sendable
             linkCount: linkCount,
             reclaimableBytes: kind == .regularFile && linkCount > 1 ? 0 : allocatedBytes
         )
+    }
+
+    /// Darwin exposes `dev_t` as a signed 32-bit integer even though device
+    /// identifiers are opaque bit patterns. Preserve those bits when widening
+    /// so device IDs with the high bit set do not trap during UInt conversion.
+    static func normalizedDeviceID(_ device: dev_t) -> UInt64 {
+        UInt64(UInt32(bitPattern: device))
     }
 }
 

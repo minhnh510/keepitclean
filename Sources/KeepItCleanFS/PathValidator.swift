@@ -145,7 +145,9 @@ public struct PathValidator: Sendable {
                 guard value.st_uid == policy.currentUserID else {
                     throw KeepItCleanError.ownerMismatch(current)
                 }
-                if let allowedDevice, UInt64(value.st_dev) != allowedDevice {
+                if let allowedDevice,
+                   LocalFileSystemReader.normalizedDeviceID(value.st_dev) != allowedDevice
+                {
                     throw KeepItCleanError.mountRoot(current)
                 }
             }

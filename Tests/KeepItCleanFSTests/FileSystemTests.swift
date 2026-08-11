@@ -28,6 +28,12 @@ private func removeTemporaryRoot(_ root: URL) {
     try? FileManager.default.removeItem(at: root)
 }
 
+@Test func signedDeviceIdentifierPreservesOpaqueBitsWithoutTrapping() {
+    let signedDevice = dev_t(-1)
+
+    #expect(LocalFileSystemReader.normalizedDeviceID(signedDevice) == UInt64(UInt32.max))
+}
+
 @Test func diskUsageDeduplicatesHardlinks() throws {
     let root = try temporaryRoot()
     defer { removeTemporaryRoot(root) }

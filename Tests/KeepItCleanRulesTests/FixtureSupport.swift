@@ -80,7 +80,7 @@ struct FixtureFileSystem: FileSystemReading, Sendable {
         }
 
         return FileIdentity(
-            device: UInt64(value.st_dev),
+            device: UInt64(UInt32(bitPattern: value.st_dev)),
             inode: UInt64(value.st_ino),
             ownerID: value.st_uid,
             fileKind: kind,
