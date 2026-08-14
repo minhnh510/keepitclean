@@ -17,10 +17,17 @@ Rules emit evidence-backed candidates. A directory name alone is never sufficien
 | Downloads | old installer/archive files explicitly selected by the user | documents, media and arbitrary Downloads content |
 | Projects | exact generated directories below configured roots | repository/worktree roots, `.git`, source, ignored private state and unknown build output |
 | Generic cache | known owner adapters or a valid `CACHEDIR.TAG` leaf | blanket `.cache` cleanup and active model/runtime caches |
+| Hardcore retention | older Gradle/NDK versions and older same-name `.app/.so/.o/.a` members inside proven generated roots | retained version/newest artifact, source/vendor binaries, unproven output, or any active/unknown owning tool |
 
 ## Default selection
 
 v0.1 auto-selects nothing. An inactive, user-owned, exact cache leaf may be selected during TUI review only after its age/process checks pass. Recent, high-rebuild-cost, stateful, native, Codex, Downloads, and reference-dependent findings remain unselected or blocked.
+
+## Hardcore retention
+
+`keep --hardcore` (an alias of `keep clean --hardcore --interactive`) opens an interactive review with live scan progress. `keep scan --hardcore` and `keep clean --hardcore` are opt-in, read-only previews; `keep clean --plan FILE --interactive` can review an existing plan. The retention adapters perform deep accounting while the normal catalog remains a fast inventory, so an unrelated huge cache cannot stall the hardcore review. The scan still writes an unselected 30-minute plan. Gradle wrapper and Android `ndkVersion` metadata are scanned before choosing one installed version to retain; when several referenced versions exist, the highest referenced installed version is retained and every reference is shown in candidate evidence. If no reference can be found, the highest installed version is retained rather than deleting every toolchain.
+
+Build-file retention is narrower than an extension search. Only tool-owned generated roots with exact markers are traversed. Artifacts are grouped by project plus exact filename, newest mtime wins deterministically, `.app` bundles are treated as indivisible directories, and bundle contents are not emitted separately. A broad project build-root candidate becomes report-only in this profile so it cannot overlap the keep-newest plan. All candidates remain unselected and move to Trash only through a separately reviewed apply.
 
 ## Native actions
 

@@ -3,12 +3,11 @@ import Foundation
 import KeepItCleanCore
 import KeepItCleanTUI
 
-@main
 struct Keep: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "keep",
         abstract: "Review and safely reclaim developer storage on macOS.",
-        discussion: "Scans are read-only. Cleanup requires a reviewed plan and moves files to Trash by default.",
+        discussion: "Scans are read-only. Cleanup requires a reviewed plan and moves files to Trash by default. Use 'keep --hardcore' for the aggressive interactive review.",
         version: "KeepItClean \(keepItCleanVersion)",
         subcommands: [
             ScanCommand.self,
@@ -27,7 +26,12 @@ struct Keep: AsyncParsableCommand {
     mutating func run() async throws {
         let service = KeepRuntimeFactory.make()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let planned = try await service.scan(roots: [home], deep: false)
+        let planned = try await TUIScanProgress.run(
+            title: "Developer storage inventory",
+            detail: "Fast rule discovery before the focused deep review."
+        ) {
+            try await service.scan(roots: [home], deep: false)
+        }
         let state = TUIAdapter.state(report: planned.report)
         let result = try KeepItCleanTUIRunner().run(initialState: state)
 
@@ -43,7 +47,12 @@ struct Keep: AsyncParsableCommand {
                 report: planned.report,
                 selecting: itemIDs
             )
-            let deepPlanned = try await service.scan(roots: deepRoots, deep: true)
+            let deepPlanned = try await TUIScanProgress.run(
+                title: "Measuring selected candidates",
+                detail: "Verifying identity, hardlinks, sparse files, and reclaim estimates."
+            ) {
+                try await service.scan(roots: deepRoots, deep: true)
+            }
             let deepReport = try TUIAdapter.deepReviewReport(
                 deepPlanned.report,
                 retaining: itemIDs
@@ -65,5 +74,26 @@ struct Keep: AsyncParsableCommand {
             HumanOutput.plan(reviewed, path: url.path)
             CLIOutput.text("Nothing was changed. Apply with: keep clean --plan \"\(url.path)\" --apply --trash")
         }
+    }
+}
+
+enum KeepArgumentRouting {
+    static func normalized(_ arguments: [String]) -> [String] {
+        switch arguments {
+        case ["--hardcore"]:
+            return ["clean", "--hardcore", "--interactive"]
+        case ["--hardcore", "--help"]:
+            return ["clean", "--help"]
+        default:
+            return arguments
+        }
+    }
+}
+
+@main
+enum KeepEntryPoint {
+    static func main() async {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        await Keep.main(KeepArgumentRouting.normalized(arguments))
     }
 }

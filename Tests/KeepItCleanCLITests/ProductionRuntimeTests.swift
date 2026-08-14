@@ -247,6 +247,18 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(!fixtureService(home: home).ruleDescriptors().isEmpty)
 }
 
+@Test func rootHardcoreAliasRoutesOnlyTheExactInteractiveInvocation() {
+    #expect(KeepArgumentRouting.normalized(["--hardcore"]) == [
+        "clean", "--hardcore", "--interactive",
+    ])
+    #expect(KeepArgumentRouting.normalized(["--hardcore", "--help"]) == [
+        "clean", "--help",
+    ])
+    #expect(KeepArgumentRouting.normalized(["scan", "--hardcore"]) == [
+        "scan", "--hardcore",
+    ])
+}
+
 @Test func tuiReviewDerivesANewImmutablePlanID() {
     let candidate = Candidate(
         ruleID: "fixture.cache",
@@ -271,6 +283,8 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(reviewed.hostID == original.hostID)
     #expect(reviewed.items.first?.selected == true)
     #expect(original.items.first?.selected == false)
+    #expect(TUIAdapter.state(plan: reviewed).selectedItemIDs == Set([candidate.id]))
+    #expect(TUIAdapter.state(plan: original).selectedItemIDs.isEmpty)
 }
 
 @Test func tuiDeepPhaseUsesExactOrParentScopedRootsAndRevalidatesSelection() throws {
@@ -397,6 +411,56 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(FileManager.default.fileExists(atPath: payload.path))
     #expect(FileManager.default.fileExists(atPath: outside.path))
     #expect(try service.history(limit: 10).isEmpty)
+}
+
+@Test func hardcoreGradlePlanRevalidatesFullReferenceSetBeforeTrashApply() async throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let wrapper = home.url.appendingPathComponent(
+        "Projects/App/gradle/wrapper/gradle-wrapper.properties"
+    )
+    try FileManager.default.createDirectory(
+        at: wrapper.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data(
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.5.0-bin.zip".utf8
+    ).write(to: wrapper)
+    let old = home.url.appendingPathComponent(".gradle/caches/9.4.1", isDirectory: true)
+    let retained = home.url.appendingPathComponent(".gradle/caches/9.5.0", isDirectory: true)
+    try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: retained, withIntermediateDirectories: true)
+    try Data("old".utf8).write(to: old.appendingPathComponent("metadata.bin"))
+    try Data("keep".utf8).write(to: retained.appendingPathComponent("metadata.bin"))
+
+    let service = fixtureService(
+        home: home,
+        processSnapshotProvider: SequencedProcessSnapshotProvider([unrelatedProcessSnapshot]),
+        nativeRunner: RecordingNativeRunner()
+    )
+    let scanned = try await service.scan(
+        roots: [home.url.path],
+        deep: true,
+        hardcore: true
+    )
+    var plan = scanned.plan
+    let index = try #require(plan.items.firstIndex {
+        $0.candidate.ruleID == "hardcore.gradle-versions"
+            && $0.candidate.path.hasSuffix("/.gradle/caches/9.4.1")
+    })
+    #expect(!plan.items.contains {
+        $0.candidate.ruleID == "hardcore.gradle-versions"
+            && $0.candidate.path.hasSuffix("/.gradle/caches/9.5.0")
+    })
+    plan.items[index].selected = true
+
+    let operation = try await service.applyTrash(plan: plan)
+    #expect(operation.state == .completed)
+    #expect(operation.items.count == 1)
+    #expect(!FileManager.default.fileExists(atPath: old.path))
+    #expect(FileManager.default.fileExists(atPath: retained.path))
+    let trashPath = try #require(operation.items.first?.resultingTrashPath)
+    #expect(FileManager.default.fileExists(atPath: trashPath))
 }
 
 @Test func statefulNativePlansFailClosedWhenOwningToolsAreActive() throws {

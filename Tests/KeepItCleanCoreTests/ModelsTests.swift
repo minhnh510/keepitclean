@@ -98,6 +98,16 @@ import Testing
     #expect(decoded.schemaVersion == 1)
 }
 
+@Test func legacyScanRequestWithoutHardcoreDecodesConservatively() throws {
+    let json = #"{"roots":["/tmp"],"homePath":"/tmp","deep":true,"now":0}"#
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .secondsSince1970
+    let request = try decoder.decode(ScanRequest.self, from: Data(json.utf8))
+
+    #expect(request.deep)
+    #expect(!request.isHardcore)
+}
+
 @Test func legacyUsageAndIdentityJSONUseConservativeDefaults() throws {
     let identity = FileIdentity(
         device: 1,

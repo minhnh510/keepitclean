@@ -18,6 +18,9 @@ public struct RuleCatalog: Sendable {
         _ = roots
 
         return [
+            HardcoreGradleVersionAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreNDKVersionAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreBuildArtifactAdapter(fileSystem: fileSystem, processes: processes),
             gradleTransientAdapter(),
             gradleTransformsAdapter(),
             gradleDependencyReportAdapter(),

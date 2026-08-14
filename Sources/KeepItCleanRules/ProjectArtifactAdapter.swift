@@ -138,6 +138,8 @@ public struct ProjectArtifactAdapter: RuleAdapter, Sendable {
                 blockReason = "Symbolic project artifacts are never followed."
             } else if case let .insufficient(reason) = proof {
                 blockReason = reason
+            } else if request.isHardcore {
+                blockReason = "Hardcore retention preserves the generated root and reviews only superseded .app/.so/.o/.a artifacts."
             } else if activeState == .active {
                 blockReason = "The owning build or package-manager process is active."
             } else if activeState == .unknown {
@@ -153,7 +155,11 @@ public struct ProjectArtifactAdapter: RuleAdapter, Sendable {
             case .insufficient:
                 actionKind = measured.fileKind == .symbolicLink ? .blocked : .reportOnly
             case .strong:
-                actionKind = blockReason == nil ? .trash : .blocked
+                if request.isHardcore {
+                    actionKind = .reportOnly
+                } else {
+                    actionKind = blockReason == nil ? .trash : .blocked
+                }
             }
             let proofEvidence: String
             switch proof {

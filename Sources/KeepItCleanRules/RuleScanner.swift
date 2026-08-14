@@ -23,13 +23,32 @@ public struct RuleScanner: CandidateScanning, Sendable {
 
         for adapter in adapters {
             do {
-                candidates.append(contentsOf: try await adapter.scan(request: request))
+                var adapterRequest = request
+                if request.isHardcore, !adapter.descriptor.id.hasPrefix("hardcore.") {
+                    // Keep the normal catalog as a fast inventory. Deep accounting is
+                    // reserved for the explicitly requested retention adapters so a
+                    // huge unrelated cache cannot stall the hardcore review.
+                    adapterRequest.deep = false
+                }
+                candidates.append(contentsOf: try await adapter.scan(request: adapterRequest))
             } catch {
                 issues.append(
                     ScanIssue(
                         message: "Rule \(adapter.descriptor.id) was incomplete: \(error.localizedDescription)"
                     )
                 )
+            }
+        }
+
+        if request.isHardcore {
+            let hardcore = candidates.filter { $0.ruleID.hasPrefix("hardcore.") }
+            candidates.removeAll { candidate in
+                guard !candidate.ruleID.hasPrefix("hardcore.") else { return false }
+                return hardcore.contains { aggressive in
+                    candidate.path == aggressive.path
+                        || isDescendant(candidate.path, of: aggressive.path)
+                        || isDescendant(aggressive.path, of: candidate.path)
+                }
             }
         }
 

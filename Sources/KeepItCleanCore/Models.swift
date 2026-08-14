@@ -256,14 +256,26 @@ public struct ScanRequest: Codable, Hashable, Sendable {
     public var roots: [String]
     public var homePath: String
     public var deep: Bool
+    /// Optional for schema compatibility with requests encoded before the
+    /// opt-in aggressive retention profile existed.
+    public var hardcore: Bool?
     public var now: Date
 
-    public init(roots: [String], homePath: String, deep: Bool = false, now: Date = Date()) {
+    public init(
+        roots: [String],
+        homePath: String,
+        deep: Bool = false,
+        hardcore: Bool = false,
+        now: Date = Date()
+    ) {
         self.roots = roots
         self.homePath = homePath
         self.deep = deep
+        self.hardcore = hardcore ? true : nil
         self.now = now
     }
+
+    public var isHardcore: Bool { hardcore == true }
 }
 
 public struct ScanIssue: Codable, Hashable, Sendable {

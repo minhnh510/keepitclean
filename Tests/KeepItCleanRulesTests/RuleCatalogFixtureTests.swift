@@ -348,6 +348,163 @@ import Testing
     #expect(candidates.first?.blockReason?.contains("no version-specific uninstall") == true)
 }
 
+@Test func hardcoreVersionRetentionKeepsOneReferencedGradleAndNDK() async throws {
+    let fixture = try FixtureHome()
+    try fixture.file(
+        "Projects/App/gradle/wrapper/gradle-wrapper.properties",
+        contents: "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.5.0-bin.zip"
+    )
+    try fixture.file(
+        "Projects/App/build.gradle.kts",
+        contents: "android { ndkVersion = \"27.0.12077973\" }"
+    )
+    for version in ["8.14.1", "9.4.1", "9.5.0"] {
+        try fixture.file(".gradle/caches/\(version)/metadata.bin")
+        try fixture.file(".gradle/daemon/\(version)/registry.bin")
+        try fixture.file(".gradle/wrapper/dists/gradle-\(version)-bin/hash/marker.bin")
+    }
+    try fixture.file(".gradle/caches/9evil/metadata.bin")
+    try fixture.file(".gradle/caches/9.5.0 backup/metadata.bin")
+    for version in ["25.2.9519653", "26.3.11579264", "27.0.12077973"] {
+        try fixture.file("Library/Android/sdk/ndk/\(version)/source.properties")
+    }
+    try fixture.file("Library/Android/sdk/ndk/27evil/source.properties")
+
+    let request = ScanRequest(
+        roots: [fixture.url.path],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true
+    )
+    let gradle = try await HardcoreGradleVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    ).scan(request: request)
+    let ndk = try await HardcoreNDKVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    ).scan(request: request)
+
+    #expect(gradle.count == 6)
+    #expect(gradle.allSatisfy { $0.actionKind == .trash && !$0.defaultSelected })
+    #expect(gradle.allSatisfy { $0.evidence.contains("kept 9.5.0") })
+    #expect(!gradle.contains { $0.path.contains("/9.5.0") || $0.path.contains("gradle-9.5.0-") })
+    #expect(!gradle.contains { $0.path.contains("9evil") || $0.path.contains(" backup") })
+    #expect(ndk.count == 2)
+    #expect(ndk.allSatisfy { $0.actionKind == .trash && !$0.defaultSelected })
+    #expect(ndk.allSatisfy { $0.evidence.contains("kept 27.0.12077973") })
+    #expect(!ndk.contains { $0.path.hasSuffix("/27.0.12077973") })
+    #expect(!ndk.contains { $0.path.hasSuffix("/27evil") })
+
+    let conservative = ScanRequest(
+        roots: [fixture.url.path],
+        homePath: fixture.url.path,
+        deep: true
+    )
+    #expect(try await HardcoreGradleVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    ).scan(request: conservative).isEmpty)
+    #expect(try await HardcoreNDKVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    ).scan(request: conservative).isEmpty)
+}
+
+@Test func hardcoreVersionRetentionBlocksWhileOwningToolsAreActive() async throws {
+    let fixture = try FixtureHome()
+    try fixture.file(".gradle/caches/9.4.1/metadata.bin")
+    try fixture.file(".gradle/caches/9.5.0/metadata.bin")
+    try fixture.file("Library/Android/sdk/ndk/26.3.11579264/source.properties")
+    try fixture.file("Library/Android/sdk/ndk/27.0.12077973/source.properties")
+    let request = ScanRequest(
+        roots: [fixture.url.path],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true
+    )
+    let gradle = try await HardcoreGradleVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.active)
+    ).scan(request: request)
+    let ndk = try await HardcoreNDKVersionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.active)
+    ).scan(request: request)
+
+    #expect(gradle.count == 1)
+    #expect(ndk.count == 1)
+    #expect((gradle + ndk).allSatisfy {
+        $0.actionKind == .blocked && $0.activeState == .active && $0.blockReason != nil
+    })
+    #expect((gradle + ndk).allSatisfy {
+        $0.evidence.contains("2 paths / 2 unique inodes")
+    })
+}
+
+@Test func hardcoreBuildArtifactsKeepNewestOnlyInsideProvenGeneratedRoots() async throws {
+    let fixture = try FixtureHome()
+    try fixture.file(".lldb/module_cache/stale.pcm")
+    try fixture.markOld(".lldb/module_cache")
+    try fixture.file("Workspace/App/build.gradle.kts")
+    try fixture.file("Workspace/App/build/intermediates/marker.bin")
+    try fixture.file("Workspace/App/build/outputs/old/Demo.app/Contents/MacOS/Demo")
+    try fixture.file("Workspace/App/build/outputs/new/Demo.app/Contents/MacOS/Demo")
+    try fixture.file("Workspace/App/build/native/old/libdemo.so")
+    try fixture.file("Workspace/App/build/native/new/libdemo.so")
+    try fixture.file("Workspace/App/build/objects/old/foo.o")
+    try fixture.file("Workspace/App/build/objects/new/foo.o")
+    try fixture.file("Workspace/App/build/static/old/libdemo.a")
+    try fixture.file("Workspace/App/build/static/new/libdemo.a")
+    try fixture.file("Workspace/App/src/libdemo.so")
+    for path in [
+        "Workspace/App/build/outputs/old/Demo.app",
+        "Workspace/App/build/native/old/libdemo.so",
+        "Workspace/App/build/objects/old/foo.o",
+        "Workspace/App/build/static/old/libdemo.a",
+    ] {
+        try fixture.markOld(path)
+    }
+
+    let root = fixture.url.path
+    let request = ScanRequest(
+        roots: [root],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true
+    )
+    let adapter = HardcoreBuildArtifactAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    )
+    let candidates = try await adapter.scan(request: request)
+    let paths = Set(candidates.map(\.path))
+
+    #expect(candidates.count == 4)
+    #expect(candidates.allSatisfy { $0.actionKind == .trash && !$0.defaultSelected })
+    #expect(paths.contains(fixture.url.appendingPathComponent("Workspace/App/build/outputs/old/Demo.app").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Workspace/App/build/native/old/libdemo.so").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Workspace/App/build/objects/old/foo.o").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Workspace/App/build/static/old/libdemo.a").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent("Workspace/App/build/outputs/new/Demo.app").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent("Workspace/App/src/libdemo.so").path))
+
+    let scanner = RuleScanner(
+        catalog: RuleCatalog(fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)),
+        homePath: fixture.url.path,
+        roots: [root]
+    )
+    let report = await scanner.scan(request: request)
+    #expect(report.candidates.contains { $0.ruleID == "hardcore.build-artifacts" })
+    #expect(report.candidates.first { $0.ruleID == "lldb.module-cache" }?.confidence == .low)
+    #expect(report.candidates.filter { $0.ruleID == "hardcore.build-artifacts" }.allSatisfy {
+        $0.confidence == .high
+    })
+    #expect(!report.candidates.contains {
+        $0.ruleID == "project.artifacts" && $0.path.hasSuffix("/Workspace/App/build")
+    })
+}
+
 private func populateFixture(_ fixture: FixtureHome) throws -> [String] {
     try fixture.file(".gradle/caches/build-cache-1/data.bin")
     try fixture.file(".gradle/caches/modules-2/files/lib.jar")

@@ -73,10 +73,15 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
         }
     }
 
-    func scan(roots rawRoots: [String], deep: Bool) async throws -> PlannedScan {
+    func scan(roots rawRoots: [String], deep: Bool, hardcore: Bool) async throws -> PlannedScan {
         let roots = try normalizedRoots(rawRoots)
         let scanner = RuleScanner(catalog: catalog, homePath: homePath, roots: roots)
-        let request = ScanRequest(roots: roots, homePath: homePath, deep: deep)
+        let request = ScanRequest(
+            roots: roots,
+            homePath: homePath,
+            deep: deep || hardcore,
+            hardcore: hardcore
+        )
         let report = applyingProductProtections(await scanner.scan(request: request))
         return try persist(report: report)
     }
@@ -526,10 +531,17 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
             processes.state(for: KnownProcessProbes.xcode)
         case let id where id.hasPrefix("vscode."):
             processes.state(for: KnownProcessProbes.visualStudioCode)
-        case "project.artifacts", "cachedir-tag.valid":
+        case "project.artifacts", "cachedir-tag.valid", "hardcore.build-artifacts":
             processes.state(matching: [
                 "cargo", "clang", "cmake", "dart", "flutter", "gradle", "java", "node",
                 "npm", "pnpm", "pod", "python", "swift", "xcodebuild", "yarn",
+            ])
+        case "hardcore.gradle-versions":
+            processes.state(for: KnownProcessProbes.gradle)
+        case "hardcore.ndk-versions":
+            processes.state(matching: [
+                "exe:gradle", "exe:gradlew", "exe:ndk-build", "exe:cmake", "exe:ninja",
+                "arg:org.gradle.launcher.daemon", "arg:/android studio.app/",
             ])
         default:
             .inactive
@@ -542,14 +554,24 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
             throw KeepItCleanError.blockedCandidate("Unknown cleanup rule: \(reviewed.ruleID)")
         }
 
+        let isHardcoreRule = reviewed.ruleID.hasPrefix("hardcore.")
         let parentValidatedRules: Set<String> = ["project.artifacts", "cachedir-tag.valid"]
-        let validationRoot = parentValidatedRules.contains(reviewed.ruleID)
-            ? URL(fileURLWithPath: reviewed.path).deletingLastPathComponent().path
-            : reviewed.path
+        let validationRoot: String
+        if isHardcoreRule {
+            // Version retention and newest-artifact membership depend on the
+            // full current reference set, so the mutation boundary rescans the
+            // same home-scoped evidence instead of trusting the reviewed path.
+            validationRoot = homePath
+        } else if parentValidatedRules.contains(reviewed.ruleID) {
+            validationRoot = URL(fileURLWithPath: reviewed.path).deletingLastPathComponent().path
+        } else {
+            validationRoot = reviewed.path
+        }
         let fresh = try await adapter.scan(request: ScanRequest(
             roots: [validationRoot],
             homePath: homePath,
-            deep: true
+            deep: true,
+            hardcore: isHardcoreRule
         ))
         guard let candidate = fresh.first(where: {
             $0.ruleID == reviewed.ruleID && $0.path == reviewed.path && $0.id == reviewed.id

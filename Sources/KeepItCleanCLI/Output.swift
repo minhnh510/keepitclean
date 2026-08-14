@@ -61,6 +61,19 @@ enum HumanOutput {
         CLIOutput.text("\(label): \(planned.report.candidates.count) candidates")
         CLIOutput.text("Measured allocated: \(KeepFormatting.bytes(planned.report.totalAllocatedBytes))")
         CLIOutput.text("Eligible reclaim estimate: \(KeepFormatting.bytes(planned.report.totalReclaimableBytes))")
+        let hardcoreGroups = Dictionary(
+            grouping: planned.report.candidates.filter { $0.ruleID.hasPrefix("hardcore.") },
+            by: \.category
+        )
+        for category in hardcoreGroups.keys.sorted() {
+            let candidates = hardcoreGroups[category] ?? []
+            let eligible = candidates.filter { $0.actionKind == .trash && !$0.isBlocked }
+            let blocked = candidates.count - eligible.count
+            let reclaimable = eligible.reduce(UInt64(0)) { $0 &+ $1.reclaimableBytes }
+            CLIOutput.text(
+                "- \(category): \(eligible.count) eligible, \(blocked) blocked, \(KeepFormatting.bytes(reclaimable))"
+            )
+        }
         CLIOutput.text("Plan: \(planned.planURL.path)")
         if planned.report.partial {
             CLIOutput.warning("The scan was partial. Review every issue; blocked or unknown state stays unselected.")

@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import KeepItCleanCore
+import KeepItCleanTUI
 
 struct ScanCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -14,13 +15,23 @@ struct ScanCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable conservative deep rule checks.")
     var deep = false
 
+    @Flag(
+        name: .long,
+        help: "Opt in to aggressive version/artifact retention; implies --deep and remains read-only."
+    )
+    var hardcore = false
+
     @Flag(name: .long, help: "Emit the versioned JSON schema.")
     var json = false
 
     mutating func run() async throws {
         let service = KeepRuntimeFactory.make()
         let roots = root.isEmpty ? [FileManager.default.homeDirectoryForCurrentUser.path] : root
-        let planned = try await service.scan(roots: roots, deep: deep)
+        let planned = try await service.scan(
+            roots: roots,
+            deep: deep || hardcore,
+            hardcore: hardcore
+        )
 
         if json {
             try CLIOutput.json(
@@ -29,11 +40,14 @@ struct ScanCommand: AsyncParsableCommand {
                     report: planned.report,
                     plan: planned.plan,
                     planPath: planned.planURL.path,
-                    mode: "read-only"
+                    mode: hardcore ? "read-only-hardcore" : "read-only"
                 )
             )
         } else {
-            HumanOutput.scan(planned, label: "Scan complete (read-only)")
+            HumanOutput.scan(
+                planned,
+                label: hardcore ? "Hardcore scan complete (read-only)" : "Scan complete (read-only)"
+            )
         }
     }
 }
@@ -86,11 +100,37 @@ struct CleanCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Emit the versioned JSON schema.")
     var json = false
 
+    @Flag(
+        name: .long,
+        help: "Create an aggressive version/artifact-retention preview; never applies by itself."
+    )
+    var hardcore = false
+
+    @Flag(
+        name: .long,
+        help: "Open a TUI to select candidates and save a new reviewed plan; never applies by itself."
+    )
+    var interactive = false
+
     @OptionGroup var safety: ReadOnlyOrTrashOptions
 
     mutating func run() async throws {
         let service = KeepRuntimeFactory.make()
         let warnings = [safety.incompleteWarning].compactMap { $0 }
+
+        if hardcore, plan != nil {
+            throw ValidationError(
+                "--hardcore creates a new preview. Omit it when reviewing or applying an existing plan."
+            )
+        }
+        if interactive, json {
+            throw ValidationError("--interactive cannot be combined with --json.")
+        }
+        if interactive, safety.requestsTrashMutation {
+            throw ValidationError(
+                "--interactive only reviews. Save the reviewed plan, then apply it in a separate command."
+            )
+        }
 
         if safety.requestsTrashMutation {
             guard let plan else {
@@ -109,6 +149,10 @@ struct CleanCommand: AsyncParsableCommand {
 
         if let plan {
             let reviewed = try service.loadPlan(reference: plan)
+            if interactive {
+                try saveInteractiveReview(reviewed, service: service)
+                return
+            }
             if json {
                 try CLIOutput.json(
                     command: "clean",
@@ -124,7 +168,32 @@ struct CleanCommand: AsyncParsableCommand {
         }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let planned = try await service.scan(roots: [home], deep: false)
+        let hardcoreMode = hardcore
+        let planned: PlannedScan
+        if interactive {
+            planned = try await TUIScanProgress.run(
+                title: hardcoreMode ? "Hardcore developer cleanup" : "Developer storage review",
+                detail: hardcoreMode
+                    ? "Finding stale toolchains and older generated artifacts."
+                    : "Finding rule-backed cleanup candidates."
+            ) {
+                try await service.scan(
+                    roots: [home],
+                    deep: hardcoreMode,
+                    hardcore: hardcoreMode
+                )
+            }
+        } else {
+            planned = try await service.scan(
+                roots: [home],
+                deep: hardcoreMode,
+                hardcore: hardcoreMode
+            )
+        }
+        if interactive {
+            try saveInteractiveReview(planned.plan, service: service)
+            return
+        }
         if json {
             try CLIOutput.json(
                 command: "clean",
@@ -132,13 +201,42 @@ struct CleanCommand: AsyncParsableCommand {
                     report: planned.report,
                     plan: planned.plan,
                     planPath: planned.planURL.path,
-                    mode: "read-only"
+                    mode: hardcore ? "read-only-hardcore" : "read-only"
                 ),
                 warnings: warnings
             )
         } else {
             warnings.forEach(CLIOutput.warning)
-            HumanOutput.scan(planned, label: "Clean preview complete (read-only)")
+            HumanOutput.scan(
+                planned,
+                label: hardcore
+                    ? "Hardcore clean preview complete (read-only)"
+                    : "Clean preview complete (read-only)"
+            )
+        }
+    }
+
+    private func saveInteractiveReview(
+        _ original: CleanupPlan,
+        service: any KeepCommandServing
+    ) throws {
+        let result = try KeepItCleanTUIRunner().run(
+            initialState: TUIAdapter.state(plan: original)
+        )
+        switch result {
+        case .cancelled:
+            CLIOutput.text("Review cancelled. No files were changed.")
+        case let .accepted(itemIDs):
+            guard !itemIDs.isEmpty else {
+                CLIOutput.text("No candidates selected. No files were changed.")
+                return
+            }
+            let reviewed = TUIAdapter.plan(original, selecting: itemIDs)
+            let url = try service.save(plan: reviewed)
+            HumanOutput.plan(reviewed, path: url.path)
+            CLIOutput.text(
+                "Nothing was changed. Apply with: keep clean --plan \"\(url.path)\" --apply --trash"
+            )
         }
     }
 }

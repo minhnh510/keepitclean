@@ -20,7 +20,7 @@ struct DoctorCheck: Sendable, Encodable {
 }
 
 protocol KeepCommandServing: Sendable {
-    func scan(roots: [String], deep: Bool) async throws -> PlannedScan
+    func scan(roots: [String], deep: Bool, hardcore: Bool) async throws -> PlannedScan
     func analyze(path: String, deep: Bool) async throws -> PlannedScan
     func loadPlan(reference: String) throws -> CleanupPlan
     func save(plan: CleanupPlan) throws -> URL
@@ -35,6 +35,12 @@ protocol KeepCommandServing: Sendable {
     func makeNativeActionPlan(actionID: String) throws -> (NativeActionPlan, URL)
     func loadNativeActionPlan(reference: String) throws -> NativeActionPlan
     func runNativeAction(plan: NativeActionPlan, confirmationToken: String) throws -> OperationRecord
+}
+
+extension KeepCommandServing {
+    func scan(roots: [String], deep: Bool) async throws -> PlannedScan {
+        try await scan(roots: roots, deep: deep, hardcore: false)
+    }
 }
 
 enum KeepRuntimeFactory {

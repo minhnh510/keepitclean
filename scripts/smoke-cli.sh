@@ -11,7 +11,12 @@ fi
 
 [[ "$($KEEP_BINARY --version)" == "KeepItClean 0.1.0" ]]
 "$KEEP_BINARY" --help | grep -q 'scan'
+"$KEEP_BINARY" --help | grep -q 'keep --hardcore'
+"$KEEP_BINARY" --hardcore --help | grep -q -- '--interactive'
 "$KEEP_BINARY" native-action --help | grep -q 'native-action'
+"$KEEP_BINARY" scan --help | grep -q -- '--hardcore'
+"$KEEP_BINARY" clean --help | grep -q -- '--hardcore'
+"$KEEP_BINARY" clean --help | grep -q -- '--interactive'
 
 if "$KEEP_BINARY" scan --apply >/dev/null 2>&1; then
     echo "scan unexpectedly accepted a mutation flag" >&2

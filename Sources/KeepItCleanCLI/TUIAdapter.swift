@@ -9,7 +9,22 @@ enum TUIAdapter {
     ]
 
     static func state(report: ScanReport) -> TUIState {
-        let grouped = Dictionary(grouping: report.candidates, by: \.category)
+        state(candidates: report.candidates)
+    }
+
+    static func state(plan: CleanupPlan) -> TUIState {
+        let candidates = plan.items.map { item -> Candidate in
+            var candidate = item.candidate
+            candidate.defaultSelected = item.selected
+                && candidate.actionKind == .trash
+                && !candidate.isBlocked
+            return candidate
+        }
+        return state(candidates: candidates)
+    }
+
+    private static func state(candidates: [Candidate]) -> TUIState {
+        let grouped = Dictionary(grouping: candidates, by: \.category)
         let categories = grouped.keys.sorted().map { categoryName in
             let candidates = grouped[categoryName, default: []]
                 .sorted { lhs, rhs in
