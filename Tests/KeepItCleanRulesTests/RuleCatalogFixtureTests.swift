@@ -36,7 +36,9 @@ import Testing
 
     #expect(trashPaths.contains(fixture.url.appendingPathComponent(".lldb/module-cache").path))
     #expect(trashPaths.contains(fixture.url.appendingPathComponent(".lldb/module_cache").path))
-    #expect(trashPaths.contains(fixture.url.appendingPathComponent(".gradle/caches/9.5.0/transforms").path))
+    let transformsRoot = fixture.url.appendingPathComponent(".gradle/caches/9.5.0/transforms").path
+    #expect(!trashPaths.contains(transformsRoot))
+    #expect(byPath[transformsRoot]?.allSatisfy { $0.actionKind == .reportOnly } == true)
     #expect(trashPaths.contains(fixture.url.appendingPathComponent(".gradle/.tmp/stale.bin").path))
     #expect(trashPaths.contains(fixture.url.appendingPathComponent(".konan/cache").path))
     #expect(trashPaths.contains(fixture.url.appendingPathComponent(".android/cache").path))
@@ -94,6 +96,61 @@ import Testing
     #expect(byPath[cocoaPodsHomeCache]?.allSatisfy { $0.actionKind == .native } == true)
 
     #expect(report.candidates == report.candidates.sorted(by: candidateOrder))
+}
+
+@Test func hardcoreGradleTransformsKeepSevenDaysAndTargetOnlyOldEntries() async throws {
+    let fixture = try FixtureHome()
+    let old = try fixture.file(".gradle/caches/9.5.0/transforms/old-hash/output.bin")
+    let recent = try fixture.file(".gradle/caches/9.5.0/transforms/recent-hash/output.bin")
+    try fixture.markOld(".gradle/caches/9.5.0/transforms/old-hash", days: 8)
+    try fixture.markOld(".gradle/caches/9.5.0/transforms/recent-hash", days: 6)
+    let root = fixture.url.appendingPathComponent(".gradle/caches/9.5.0/transforms").path
+    let adapter = HardcoreGradleTransformRetentionAdapter(
+        fileSystem: FixtureFileSystem(),
+        processes: FixedProcessProbe(.inactive)
+    )
+
+    let candidates = try await adapter.scan(request: ScanRequest(
+        roots: [root],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true,
+        now: Date()
+    ))
+
+    let candidate = try #require(candidates.first)
+    #expect(candidates.count == 1)
+    #expect(candidate.path == URL(fileURLWithPath: old).deletingLastPathComponent().path)
+    #expect(candidate.path != URL(fileURLWithPath: recent).deletingLastPathComponent().path)
+    #expect(candidate.ruleID == "hardcore.gradle-transforms-7d")
+    #expect(candidate.actionKind == .trash)
+    #expect(candidate.activeState == .inactive)
+    #expect(candidate.evidence.contains("seven-day retention cutoff"))
+    #expect(!candidates.contains { $0.path == root })
+}
+
+@Test func hardcoreGradleTransformsFailClosedWhileGradleIsActiveOrUnknown() async throws {
+    let fixture = try FixtureHome()
+    try fixture.file(".gradle/caches/9.5.0/transforms/old-hash/output.bin")
+    try fixture.markOld(".gradle/caches/9.5.0/transforms/old-hash", days: 8)
+
+    for state in [ActiveState.active, .unknown] {
+        let adapter = HardcoreGradleTransformRetentionAdapter(
+            fileSystem: FixtureFileSystem(),
+            processes: FixedProcessProbe(state)
+        )
+        let candidates = try await adapter.scan(request: ScanRequest(
+            roots: [fixture.url.path],
+            homePath: fixture.url.path,
+            deep: true,
+            hardcore: true,
+            now: Date()
+        ))
+        let candidate = try #require(candidates.first)
+        #expect(candidate.actionKind == .blocked)
+        #expect(candidate.activeState == state)
+        #expect(candidate.reclaimableBytes == 0)
+    }
 }
 
 @Test func activeAndUnknownProcessStatesBlockDeveloperCleanup() async throws {
@@ -442,6 +499,113 @@ import Testing
     })
 }
 
+@Test func hardcoreStorageRetentionFindsOldCodexAndroidAndSimulatorState() async throws {
+    let fixture = try FixtureHome()
+    try fixture.file(".codex/sessions/2026/07/01/old.jsonl", contents: "old history")
+    try fixture.file(".codex/sessions/2026/08/10/recent.jsonl", contents: "recent history")
+    try fixture.file(".codex.corrupt.20260527-115342/sessions/recovery.jsonl")
+    try fixture.file(".codex.corrupt.20260813-115342/sessions/recovery.jsonl")
+    try fixture.file(".codex.corrupt.unknown/sessions/recovery.jsonl")
+    try fixture.file("Projects/App/build.gradle.kts", contents: "android { compileSdk = 34 }")
+    for api in [25, 34, 35] {
+        try fixture.file("Library/Android/sdk/platforms/android-\(api)/package.xml")
+    }
+    try fixture.file("Library/Developer/CoreSimulator/Images/runtime-cache.bin")
+    try fixture.file("Library/Developer/CoreSimulator/Caches/dyld/cache.bin")
+    try fixture.file(".android/avd/Pixel.avd/snapshots/default_boot/ram.img")
+    try fixture.file(".android/avd/Pixel.avd/userdata-qemu.img")
+
+    let now = try #require(
+        ISO8601DateFormatter().date(from: "2026-08-14T12:00:00Z")
+    )
+    let request = ScanRequest(
+        roots: [fixture.url.path],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true,
+        now: now
+    )
+    let adapters: [any RuleAdapter] = [
+        HardcoreAndroidPlatformAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+        HardcoreCodexSessionRetentionAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+        HardcoreCodexCorruptSnapshotAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+        HardcoreCoreSimulatorCacheAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+        HardcoreAVDSnapshotAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+    ]
+    let candidates = try await scanAdapters(adapters, request: request)
+    let paths = Set(candidates.map(\.path))
+
+    #expect(candidates.count == 6)
+    #expect(candidates.allSatisfy { $0.actionKind == .trash && !$0.defaultSelected })
+    #expect(paths.contains(fixture.url.appendingPathComponent(".codex/sessions/2026/07/01").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent(".codex/sessions/2026/08/10").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.20260527-115342").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.20260813-115342").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.unknown").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Library/Android/sdk/platforms/android-25").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent("Library/Android/sdk/platforms/android-34").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent("Library/Android/sdk/platforms/android-35").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Library/Developer/CoreSimulator/Images").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent("Library/Developer/CoreSimulator/Caches/dyld").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent(".android/avd/Pixel.avd/snapshots").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent(".android/avd/Pixel.avd/userdata-qemu.img").path))
+
+    let activeCandidates = try await scanAdapters([
+        HardcoreAndroidPlatformAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+        HardcoreCodexSessionRetentionAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+        HardcoreCodexCorruptSnapshotAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+        HardcoreCoreSimulatorCacheAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+        HardcoreAVDSnapshotAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+    ], request: request)
+    #expect(!activeCandidates.isEmpty)
+    #expect(activeCandidates.allSatisfy {
+        $0.actionKind == .blocked && $0.activeState == .active && $0.blockReason != nil
+    })
+
+    let sdkRoot = fixture.url.appendingPathComponent("Library/Android/sdk").path
+    let sdkOnlyReport = await RuleScanner(
+        catalog: RuleCatalog(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
+        homePath: fixture.url.path,
+        roots: [sdkRoot]
+    ).scan(request: ScanRequest(
+        roots: [sdkRoot],
+        homePath: fixture.url.path,
+        deep: true,
+        hardcore: true,
+        now: now
+    ))
+    #expect(!sdkOnlyReport.issues.contains {
+        $0.message.contains("project-reference scan exceeded")
+            || $0.message.contains("project discovery exceeded")
+    })
+    #expect(sdkOnlyReport.candidates.contains {
+        $0.ruleID == "hardcore.android-platforms"
+            && $0.path.hasSuffix("/platforms/android-34")
+    })
+}
+
 @Test func hardcoreBuildArtifactsKeepNewestOnlyInsideProvenGeneratedRoots() async throws {
     let fixture = try FixtureHome()
     try fixture.file(".lldb/module_cache/stale.pcm")
@@ -608,4 +772,15 @@ private func candidateOrder(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
     if lhs.category != rhs.category { return lhs.category < rhs.category }
     if lhs.path != rhs.path { return lhs.path < rhs.path }
     return lhs.ruleID < rhs.ruleID
+}
+
+private func scanAdapters(
+    _ adapters: [any RuleAdapter],
+    request: ScanRequest
+) async throws -> [Candidate] {
+    var result: [Candidate] = []
+    for adapter in adapters {
+        result.append(contentsOf: try await adapter.scan(request: request))
+    }
+    return result
 }

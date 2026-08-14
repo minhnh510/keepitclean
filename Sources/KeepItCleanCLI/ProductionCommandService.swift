@@ -177,19 +177,25 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
             if plan.hostID != host.currentHostID() { throw KeepItCleanError.hostMismatch }
             throw KeepItCleanError.unsupported("Cleanup plan has an invalid schema or review window.")
         }
-        for item in plan.selectedItems {
-            let candidate = item.candidate
-            guard candidate.actionKind == .trash, !candidate.isBlocked else {
-                throw KeepItCleanError.blockedCandidate(candidate.path)
+        let selectedCandidates = plan.selectedItems.map(\.candidate)
+        let candidatesByRule = Dictionary(grouping: selectedCandidates, by: \.ruleID)
+        for ruleID in candidatesByRule.keys.sorted() {
+            guard let candidates = candidatesByRule[ruleID],
+                  let representative = candidates.first
+            else { continue }
+            for candidate in candidates {
+                guard candidate.actionKind == .trash, !candidate.isBlocked else {
+                    throw KeepItCleanError.blockedCandidate(candidate.path)
+                }
             }
-            let state = currentProcessState(for: candidate)
+            let state = currentProcessState(for: representative)
             guard state == .inactive else {
                 let reason = state == .active
-                    ? "Related developer process became active: \(candidate.path)"
-                    : "Related process state could not be revalidated: \(candidate.path)"
+                    ? "Related developer process became active: \(representative.path)"
+                    : "Related process state could not be revalidated: \(representative.path)"
                 throw KeepItCleanError.blockedCandidate(reason)
             }
-            try await revalidateRuleMembership(candidate)
+            try await revalidateRuleMembership(candidates)
         }
         return try gateway.applyTrash(plan: plan, hostID: host.currentHostID())
     }
@@ -536,19 +542,39 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
                 "cargo", "clang", "cmake", "dart", "flutter", "gradle", "java", "node",
                 "npm", "pnpm", "pod", "python", "swift", "xcodebuild", "yarn",
             ])
-        case "hardcore.gradle-versions":
+        case "hardcore.gradle-versions", "hardcore.gradle-transforms-7d":
             processes.state(for: KnownProcessProbes.gradle)
         case "hardcore.ndk-versions":
             processes.state(matching: [
                 "exe:gradle", "exe:gradlew", "exe:ndk-build", "exe:cmake", "exe:ninja",
                 "arg:org.gradle.launcher.daemon", "arg:/android studio.app/",
             ])
+        case "hardcore.android-platforms":
+            processes.state(matching: [
+                "exe:gradle", "exe:gradlew", "exe:sdkmanager",
+                "arg:org.gradle.launcher.daemon", "arg:/android studio.app/",
+            ])
+        case "hardcore.codex-session-days", "hardcore.codex-corrupt-snapshots":
+            processes.state(for: KnownProcessProbes.codex)
+        case "hardcore.coresimulator-caches":
+            processes.state(matching: [
+                "exe:xcode", "exe:xcodebuild", "exe:simctl", "exe:simulator",
+                "arg:/xcode.app/", "arg:coresimulatorservice",
+            ])
+        case "hardcore.android-avd-snapshots":
+            processes.state(for: KnownProcessProbes.android)
         default:
             .inactive
         }
     }
 
-    private func revalidateRuleMembership(_ reviewed: Candidate) async throws {
+    private func revalidateRuleMembership(_ reviewedCandidates: [Candidate]) async throws {
+        guard let first = reviewedCandidates.first,
+              reviewedCandidates.allSatisfy({ $0.ruleID == first.ruleID })
+        else {
+            throw KeepItCleanError.unsupported("Rule revalidation requires one non-empty rule group.")
+        }
+        let reviewed = first
         let adapters = catalog.defaultAdapters(homePath: homePath, roots: [homePath])
         guard let adapter = adapters.first(where: { $0.descriptor.id == reviewed.ruleID }) else {
             throw KeepItCleanError.blockedCandidate("Unknown cleanup rule: \(reviewed.ruleID)")
@@ -556,37 +582,49 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
 
         let isHardcoreRule = reviewed.ruleID.hasPrefix("hardcore.")
         let parentValidatedRules: Set<String> = ["project.artifacts", "cachedir-tag.valid"]
-        let validationRoot: String
+        let validationRoots: [String]
         if isHardcoreRule {
             // Version retention and newest-artifact membership depend on the
             // full current reference set, so the mutation boundary rescans the
             // same home-scoped evidence instead of trusting the reviewed path.
-            validationRoot = homePath
+            validationRoots = [homePath]
         } else if parentValidatedRules.contains(reviewed.ruleID) {
-            validationRoot = URL(fileURLWithPath: reviewed.path).deletingLastPathComponent().path
+            validationRoots = Array(Set(reviewedCandidates.map {
+                URL(fileURLWithPath: $0.path).deletingLastPathComponent().path
+            })).sorted()
         } else {
-            validationRoot = reviewed.path
+            validationRoots = reviewedCandidates.map(\.path).sorted()
         }
         let fresh = try await adapter.scan(request: ScanRequest(
-            roots: [validationRoot],
+            roots: validationRoots,
             homePath: homePath,
             deep: true,
             hardcore: isHardcoreRule
         ))
-        guard let candidate = fresh.first(where: {
-            $0.ruleID == reviewed.ruleID && $0.path == reviewed.path && $0.id == reviewed.id
-        }), candidate.ruleVersion == reviewed.ruleVersion,
-              candidate.actionKind == .trash, !candidate.isBlocked,
-              let reviewedIdentity = reviewed.identity,
-              let freshIdentity = candidate.identity,
-              reviewedIdentity.matchesForMutation(freshIdentity),
-              reviewedIdentity.logicalBytes == freshIdentity.logicalBytes,
-              reviewedIdentity.allocatedBytes == freshIdentity.allocatedBytes,
-              reviewedIdentity.reclaimableBytes == freshIdentity.reclaimableBytes
-        else {
-            throw KeepItCleanError.blockedCandidate(
-                "Candidate no longer matches its reviewed rule and identity: \(reviewed.path)"
-            )
+        var freshByID: [String: Candidate] = [:]
+        for candidate in fresh where candidate.ruleID == reviewed.ruleID {
+            guard freshByID.updateValue(candidate, forKey: candidate.id) == nil else {
+                throw KeepItCleanError.blockedCandidate(
+                    "Current rule emitted a duplicate candidate identity: \(candidate.path)"
+                )
+            }
+        }
+        for reviewed in reviewedCandidates {
+            guard let candidate = freshByID[reviewed.id],
+                  candidate.path == reviewed.path,
+                  candidate.ruleVersion == reviewed.ruleVersion,
+                  candidate.actionKind == .trash, !candidate.isBlocked,
+                  let reviewedIdentity = reviewed.identity,
+                  let freshIdentity = candidate.identity,
+                  reviewedIdentity.matchesForMutation(freshIdentity),
+                  reviewedIdentity.logicalBytes == freshIdentity.logicalBytes,
+                  reviewedIdentity.allocatedBytes == freshIdentity.allocatedBytes,
+                  reviewedIdentity.reclaimableBytes == freshIdentity.reclaimableBytes
+            else {
+                throw KeepItCleanError.blockedCandidate(
+                    "Candidate no longer matches its reviewed rule and identity: \(reviewed.path)"
+                )
+            }
         }
     }
 }

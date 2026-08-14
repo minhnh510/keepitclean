@@ -4,7 +4,7 @@ enum TUIFixture {
     static let gib: UInt64 = 1 << 30
     static let mib: UInt64 = 1 << 20
 
-    static func state() -> TUIState {
+    static func state(allowsApply: Bool = false) -> TUIState {
         TUIState(
             categories: [
                 TUICategory(
@@ -63,7 +63,8 @@ enum TUIFixture {
                 ),
             ],
             width: 160,
-            height: 30
+            height: 30,
+            allowsApply: allowsApply
         )
     }
 }

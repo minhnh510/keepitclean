@@ -4,8 +4,20 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-if rg -n '(/bin/(ba)?sh|/usr/bin/sudo|ProcessInfo\.processInfo\.environment\["HOME"\]\s*=)' Sources; then
-    echo "Forbidden shell, sudo, or HOME mutation found in production sources." >&2
+if rg -n '(/bin/(ba)?sh|ProcessInfo\.processInfo\.environment\["HOME"\]\s*=)' Sources; then
+    echo "Forbidden shell or HOME mutation found in production sources." >&2
+    exit 1
+fi
+
+SUDO_HITS="$(rg -n '/usr/bin/sudo' Sources || true)"
+if [[ -n "$SUDO_HITS" ]] && echo "$SUDO_HITS" | rg -v '^Sources/KeepItCleanCLI/PrivilegedHelperClient\.swift:'; then
+    echo "sudo may appear only in the fixed privileged-helper client." >&2
+    exit 1
+fi
+
+SPAWN_HITS="$(rg -n 'posix_spawn' Sources || true)"
+if [[ -n "$SPAWN_HITS" ]] && echo "$SPAWN_HITS" | rg -v '^Sources/KeepItCleanCLI/PrivilegedHelperClient\.swift:'; then
+    echo "Process spawning may appear only in the fixed privileged-helper client." >&2
     exit 1
 fi
 

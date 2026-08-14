@@ -19,9 +19,17 @@ final class TUIInputDecoderTests: XCTestCase {
     func testSafetyRelevantKeys() {
         var decoder = TUIInputDecoder()
         XCTAssertEqual(
-            decoder.feed(Array(" c?dq".utf8)),
-            [.toggleSelection, .confirmSelection, .toggleHelp, .showDetail, .quit]
+            decoder.feed(Array(" caA?dq".utf8)),
+            [.toggleSelection, .confirmSelection, .requestApply, .requestApply, .toggleHelp, .showDetail, .quit]
         )
         XCTAssertEqual(decoder.feed([0x03]), [.quit])
+    }
+
+    func testHomeQuickSelectionNumbers() {
+        var decoder = TUIInputDecoder()
+        XCTAssertEqual(
+            decoder.feed(Array("14".utf8)),
+            [.selectIndex(0), .selectIndex(3)]
+        )
     }
 }

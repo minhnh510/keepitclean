@@ -150,6 +150,37 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(try validator.validateExistingTarget(target.path).fileKind == .directory)
 }
 
+@Test func validatorAllowsOnlyExactCodexSessionDayBucketsInsideProtectedStore() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let sessions = root.appendingPathComponent(".codex/sessions", isDirectory: true)
+    let day = sessions.appendingPathComponent("2026/07/01", isDirectory: true)
+    let invalidDay = sessions.appendingPathComponent("2026/13/40", isDirectory: true)
+    let item = day.appendingPathComponent("rollout.jsonl")
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: invalidDay, withIntermediateDirectories: true)
+    try Data("history".utf8).write(to: item)
+
+    let validator = PathValidator(policy: PathValidationPolicy(
+        homePath: root.path,
+        allowedRoots: [root.path]
+    ))
+
+    #expect(try validator.validateExistingTarget(day.path).fileKind == .directory)
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(sessions.path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(sessions.appendingPathComponent("2026/07").path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(item.path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(invalidDay.path)
+    }
+}
+
 @Test func planAndOperationStoresRoundTripAndStayBounded() throws {
     let root = try temporaryRoot()
     defer { removeTemporaryRoot(root) }
@@ -626,6 +657,42 @@ private func removeTemporaryRoot(_ root: URL) {
     #expect(reader.fileExists(at: source.path))
     let trashChildren = (try? reader.immediateChildren(at: trash.path)) ?? []
     #expect(trashChildren.isEmpty)
+}
+
+@Test func largeTrashSweepUsesBoundedJournalCheckpoints() throws {
+    let root = try temporaryRoot()
+    defer { removeTemporaryRoot(root) }
+    let reader = LocalFileSystemReader()
+    let candidates = try (0..<257).map { index in
+        let source = root.appendingPathComponent(String(format: "transform-%04d", index))
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        return try fixtureCandidate(at: source, reader: reader)
+    }
+    let store = CountingOperationStore()
+    let trash = root.appendingPathComponent(".TrashFixture", isDirectory: true)
+    let gateway = FileMutationGateway(
+        validator: PathValidator(policy: PathValidationPolicy(
+            homePath: root.path,
+            allowedRoots: [root.path],
+            protectedSubtrees: []
+        )),
+        reader: reader,
+        mover: DirectoryTrashMover(trashDirectory: trash),
+        operationStore: store
+    )
+
+    let operation = try gateway.applyTrash(
+        plan: CleanupPlan(
+            hostID: "fixture-host",
+            items: candidates.map { CleanupPlanItem(candidate: $0) }
+        ),
+        hostID: "fixture-host"
+    )
+
+    #expect(operation.state == .completed)
+    #expect(operation.items.allSatisfy { $0.status == .movedToTrash })
+    #expect(store.appendCount == 2)
+    #expect(try reader.immediateChildren(at: trash.path).count == candidates.count)
 }
 
 @Test func gatewayApplyLeafSwapFailsClosedWithoutMovingReplacement() throws {
@@ -1108,6 +1175,34 @@ private final class FailingAfterFirstAppendStore: OperationStoring, @unchecked S
 
     func operations(limit: Int) throws -> [OperationRecord] {
         first.map { [$0] } ?? []
+    }
+}
+
+private final class CountingOperationStore: OperationStoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: OperationRecord?
+    private(set) var appendCount = 0
+
+    func append(operation: OperationRecord) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        latest = operation
+        appendCount += 1
+    }
+
+    func operation(id: UUID) throws -> OperationRecord {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latest, latest.id == id else {
+            throw KeepItCleanError.operationNotFound(id.uuidString)
+        }
+        return latest
+    }
+
+    func operations(limit: Int) throws -> [OperationRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return latest.map { [$0] } ?? []
     }
 }
 

@@ -136,7 +136,7 @@ public final class JSONLOperationStore: OperationStoring, @unchecked Sendable {
     public let maximumBytes: Int
     private let lock = NSLock()
 
-    public init(logURL: URL, maximumRecords: Int = 100, maximumBytes: Int = 10 * 1_024 * 1_024) {
+    public init(logURL: URL, maximumRecords: Int = 100, maximumBytes: Int = 64 * 1_024 * 1_024) {
         self.logURL = logURL
         self.maximumRecords = max(1, maximumRecords)
         self.maximumBytes = max(1_024, maximumBytes)

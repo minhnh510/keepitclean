@@ -108,7 +108,7 @@ struct CleanCommand: AsyncParsableCommand {
 
     @Flag(
         name: .long,
-        help: "Open a TUI to select candidates and save a new reviewed plan; never applies by itself."
+        help: "Open the TUI to save a reviewed plan or explicitly move the selection to Trash."
     )
     var interactive = false
 
@@ -137,12 +137,13 @@ struct CleanCommand: AsyncParsableCommand {
                 throw ValidationError("--plan is required with --apply --trash. Scan and review first.")
             }
             let reviewed = try service.loadPlan(reference: plan)
-            let operation = try await service.applyTrash(plan: reviewed)
+            let operation = json
+                ? try await service.applyTrash(plan: reviewed)
+                : try await TrashApplyUI.run(plan: reviewed, service: service)
             if json {
                 try CLIOutput.json(command: "clean", data: operation, warnings: warnings)
             } else {
-                HumanOutput.operation(operation)
-                CLIOutput.text("Items were moved to Trash. Space is not reclaimed until Trash is emptied.")
+                HumanOutput.trashOutcome(operation)
             }
             return
         }
@@ -150,7 +151,7 @@ struct CleanCommand: AsyncParsableCommand {
         if let plan {
             let reviewed = try service.loadPlan(reference: plan)
             if interactive {
-                try saveInteractiveReview(reviewed, service: service)
+                try await saveInteractiveReview(reviewed, service: service)
                 return
             }
             if json {
@@ -191,7 +192,7 @@ struct CleanCommand: AsyncParsableCommand {
             )
         }
         if interactive {
-            try saveInteractiveReview(planned.plan, service: service)
+            try await saveInteractiveReview(planned.plan, service: service)
             return
         }
         if json {
@@ -219,9 +220,9 @@ struct CleanCommand: AsyncParsableCommand {
     private func saveInteractiveReview(
         _ original: CleanupPlan,
         service: any KeepCommandServing
-    ) throws {
+    ) async throws {
         let result = try KeepItCleanTUIRunner().run(
-            initialState: TUIAdapter.state(plan: original)
+            initialState: TUIAdapter.automaticReviewState(plan: original)
         )
         switch result {
         case .cancelled:
@@ -237,6 +238,16 @@ struct CleanCommand: AsyncParsableCommand {
             CLIOutput.text(
                 "Nothing was changed. Apply with: keep clean --plan \"\(url.path)\" --apply --trash"
             )
+        case let .applyRequested(itemIDs):
+            guard !itemIDs.isEmpty else {
+                CLIOutput.text("No candidates selected. No files were changed.")
+                return
+            }
+            let reviewed = TUIAdapter.plan(original, selecting: itemIDs)
+            let url = try service.save(plan: reviewed)
+            HumanOutput.plan(reviewed, path: url.path)
+            let operation = try await TrashApplyUI.run(plan: reviewed, service: service)
+            HumanOutput.trashOutcome(operation)
         }
     }
 }

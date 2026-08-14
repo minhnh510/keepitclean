@@ -26,7 +26,7 @@ public struct PathValidationPolicy: Sendable {
     /// `/private`. Normalize only these fixed OS aliases before walking the
     /// target so a legitimate temporary fixture is not treated as a user-made
     /// symlink. All symlinks below an allowed root remain rejected.
-    static func canonicalSystemAlias(_ rawPath: String) -> String {
+    public static func canonicalSystemAlias(_ rawPath: String) -> String {
         let path = NSString(string: rawPath).standardizingPath
         for alias in ["/var", "/tmp", "/etc"] {
             if path == alias || path.hasPrefix(alias + "/") {
@@ -117,7 +117,10 @@ public struct PathValidator: Sendable {
         guard policy.allowedRoots.contains(where: { isStrictDescendant(path, of: $0) }) else {
             throw KeepItCleanError.protectedPath(path)
         }
-        guard !policy.protectedSubtrees.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) else {
+        let isProtected = policy.protectedSubtrees.contains(where: {
+            path == $0 || path.hasPrefix($0 + "/")
+        })
+        guard !isProtected || isExactCodexSessionDayBucket(path) else {
             throw KeepItCleanError.protectedPath(path)
         }
 
@@ -174,5 +177,37 @@ public struct PathValidator: Sendable {
 
     private func isStrictDescendant(_ path: String, of root: String) -> Bool {
         path != root && path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
+    /// The session store remains protected by default. The only namespace
+    /// exception is one complete YYYY/MM/DD bucket, which a current hardcore
+    /// rule must still authorize and identity-bind before the gateway mutates.
+    /// Individual session files, year/month roots, and nested descendants stay
+    /// protected even when a plan is tampered with.
+    private func isExactCodexSessionDayBucket(_ path: String) -> Bool {
+        let root = "\(policy.homePath)/.codex/sessions/"
+        guard path.hasPrefix(root) else { return false }
+        let relative = String(path.dropFirst(root.count))
+        let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              parts[0].count == 4,
+              parts[1].count == 2,
+              parts[2].count == 2,
+              parts.allSatisfy({ $0.allSatisfy(\.isNumber) }),
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2])
+        else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let date = calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: year,
+            month: month,
+            day: day
+        )) else { return false }
+        let roundTrip = calendar.dateComponents([.year, .month, .day], from: date)
+        return roundTrip.year == year && roundTrip.month == month && roundTrip.day == day
     }
 }

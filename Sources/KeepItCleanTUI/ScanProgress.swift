@@ -7,11 +7,51 @@ public enum TUIScanProgress {
         detail: String,
         operation: @escaping @Sendable () async throws -> Value
     ) async throws -> Value {
+        try await TUIProgressRunner.run(
+            display: ProgressDisplay(
+                phase: "SCANNING",
+                title: title,
+                detail: detail,
+                boundary: "Read-only • nothing is selected or removed",
+                activity: "Inspecting metadata and allocated bytes",
+                success: "Scan ready",
+                failure: "Scan failed"
+            ),
+            operation: operation
+        )
+    }
+}
+
+public enum TUITrashProgress {
+    public static func run<Value: Sendable>(
+        itemCount: Int,
+        reclaimableBytes: UInt64,
+        operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try await TUIProgressRunner.run(
+            display: ProgressDisplay(
+                phase: "MOVING TO TRASH",
+                title: "Moving \(itemCount) verified \(itemCount == 1 ? "item" : "items")",
+                detail: "\(ByteFormat.string(reclaimableBytes)) estimated • identity is rechecked before every move",
+                boundary: "Trash-first • No data collection • Undo available",
+                activity: "Verifying and moving reviewed items",
+                success: "Trash operation complete",
+                failure: "Trash operation failed"
+            ),
+            operation: operation
+        )
+    }
+}
+
+private enum TUIProgressRunner {
+    static func run<Value: Sendable>(
+        display: ProgressDisplay,
+        operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
         guard isatty(STDOUT_FILENO) == 1 else {
             return try await operation()
         }
 
-        let display = ScanProgressDisplay(title: title, detail: detail)
         let result = ProgressResult<Value>()
         let worker = Task {
             do {
@@ -60,41 +100,59 @@ private actor ProgressResult<Value: Sendable> {
     }
 }
 
-private final class ScanProgressDisplay {
+private final class ProgressDisplay {
     private static let frames = ["◐", "◓", "◑", "◒"]
+    private let phase: String
     private let title: String
     private let detail: String
+    private let boundary: String
+    private let activity: String
+    private let success: String
+    private let failure: String
 
-    init(title: String, detail: String) {
+    init(
+        phase: String,
+        title: String,
+        detail: String,
+        boundary: String,
+        activity: String,
+        success: String,
+        failure: String
+    ) {
+        self.phase = phase
         self.title = title
         self.detail = detail
+        self.boundary = boundary
+        self.activity = activity
+        self.success = success
+        self.failure = failure
     }
 
     func begin() {
-        write("\u{001B}[1;36m╭─ KeepItClean ─ SCANNING\u{001B}[0m\n")
+        write("\u{001B}[1;36m╭─ KeepItClean ─ \(phase)\u{001B}[0m\n")
         write("│ \u{001B}[1m\(title)\u{001B}[0m\n")
         write("│ \u{001B}[2m\(detail)\u{001B}[0m\n")
-        write("╰─ Read-only • nothing is selected or removed\n")
+        write("╰─ \(boundary)\n")
     }
 
     func update(frame: Int, elapsed: TimeInterval) {
         let glyph = Self.frames[frame % Self.frames.count]
         write(
             "\r\u{001B}[2K  \u{001B}[1;36m\(glyph)\u{001B}[0m "
-                + "Inspecting metadata and allocated bytes  "
+                + "\(activity)  "
                 + "\u{001B}[2m\(elapsedLabel(elapsed))\u{001B}[0m"
         )
     }
 
     func finish(elapsed: TimeInterval) {
         write(
-            "\r\u{001B}[2K  \u{001B}[1;32m✓\u{001B}[0m Scan ready  "
+            "\r\u{001B}[2K  \u{001B}[1;32m✓\u{001B}[0m \(success)  "
                 + "\u{001B}[2m\(elapsedLabel(elapsed))\u{001B}[0m\n"
         )
     }
 
     func fail(_ message: String) {
-        write("\r\u{001B}[2K  \u{001B}[1;31m×\u{001B}[0m Scan failed: \(message)\n")
+        write("\r\u{001B}[2K  \u{001B}[1;31m×\u{001B}[0m \(failure): \(message)\n")
     }
 
     private func elapsedLabel(_ elapsed: TimeInterval) -> String {

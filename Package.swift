@@ -13,6 +13,8 @@ let package = Package(
         .library(name: "KeepItCleanFS", targets: ["KeepItCleanFS"]),
         .library(name: "KeepItCleanRules", targets: ["KeepItCleanRules"]),
         .library(name: "KeepItCleanTUI", targets: ["KeepItCleanTUI"]),
+        .library(name: "KeepItCleanSystem", targets: ["KeepItCleanSystem"]),
+        .executable(name: "keep-privileged-helper", targets: ["KeepItCleanPrivilegedHelper"]),
     ],
     dependencies: [
         .package(
@@ -34,6 +36,14 @@ let package = Package(
             name: "KeepItCleanTUI",
             dependencies: ["KeepItCleanCore"]
         ),
+        .target(
+            name: "KeepItCleanSystem",
+            dependencies: ["KeepItCleanCore", "KeepItCleanFS"]
+        ),
+        .executableTarget(
+            name: "KeepItCleanPrivilegedHelper",
+            dependencies: ["KeepItCleanCore", "KeepItCleanFS", "KeepItCleanSystem"]
+        ),
         .executableTarget(
             name: "KeepItCleanCLI",
             dependencies: [
@@ -41,6 +51,7 @@ let package = Package(
                 "KeepItCleanFS",
                 "KeepItCleanRules",
                 "KeepItCleanTUI",
+                "KeepItCleanSystem",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -62,7 +73,11 @@ let package = Package(
         ),
         .testTarget(
             name: "KeepItCleanCLITests",
-            dependencies: ["KeepItCleanCLI", "KeepItCleanCore", "KeepItCleanFS"]
+            dependencies: ["KeepItCleanCLI", "KeepItCleanCore", "KeepItCleanFS", "KeepItCleanSystem"]
+        ),
+        .testTarget(
+            name: "KeepItCleanSystemTests",
+            dependencies: ["KeepItCleanCore", "KeepItCleanFS", "KeepItCleanSystem"]
         ),
     ]
 )

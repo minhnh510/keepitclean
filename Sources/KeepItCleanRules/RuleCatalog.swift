@@ -18,8 +18,14 @@ public struct RuleCatalog: Sendable {
         _ = roots
 
         return [
+            HardcoreGradleTransformRetentionAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreGradleVersionAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreNDKVersionAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreAndroidPlatformAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreCodexSessionRetentionAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreCodexCorruptSnapshotAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreCoreSimulatorCacheAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreAVDSnapshotAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreBuildArtifactAdapter(fileSystem: fileSystem, processes: processes),
             gradleTransientAdapter(),
             gradleTransformsAdapter(),
@@ -124,9 +130,10 @@ public struct RuleCatalog: Sendable {
             ),
             probe: KnownProcessProbes.gradle,
             policy: CandidatePolicy(
-                actionKind: .trash,
-                risk: .review,
+                actionKind: .reportOnly,
+                risk: .high,
                 rebuildCost: .high,
+                reportOnlyReason: "Use hardcore seven-day transform retention instead of moving the entire transforms root.",
                 deepOnly: true
             ),
             discovery: discovery

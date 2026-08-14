@@ -54,6 +54,53 @@ final class TUIReducerTests: XCTestCase {
         XCTAssertEqual(transition.effect, .acceptSelection(itemIDs: ["gradle-cache"]))
     }
 
+    func testApplyRequiresFinalReviewMode() {
+        let transition = TUIReducer.reduce(TUIFixture.state(), action: .requestApply)
+
+        XCTAssertEqual(transition.effect, .none)
+        XCTAssertEqual(transition.state.screen, .categories)
+        XCTAssertEqual(transition.state.notice, "Finish the deep scan before applying cleanup.")
+    }
+
+    func testApplyUsesSeparateConfirmationScreenAndEnterEffect() {
+        var transition = TUIReducer.reduce(
+            TUIFixture.state(allowsApply: true),
+            action: .requestApply
+        )
+        XCTAssertEqual(transition.effect, .none)
+        XCTAssertEqual(transition.state.screen, .confirmApply(returnTo: .categories))
+
+        transition = TUIReducer.reduce(transition.state, action: .open)
+        XCTAssertEqual(transition.effect, .applySelection(itemIDs: ["gradle-cache"]))
+    }
+
+    func testApplyConfirmationCanBeCancelledWithoutEffect() {
+        var state = TUIReducer.reduce(
+            TUIFixture.state(allowsApply: true),
+            action: .requestApply
+        ).state
+        state = TUIReducer.reduce(state, action: .back).state
+        XCTAssertEqual(state.screen, .categories)
+        XCTAssertEqual(state.selectedItemIDs, ["gradle-cache"])
+    }
+
+    func testAutomaticReviewDoesNotAllowSelectionDrift() {
+        let category = TUIFixture.state().categories[0]
+        var state = TUIState(
+            categories: [category],
+            allowsApply: true,
+            usesAutomaticSelection: true
+        )
+        let original = state.selectedItemIDs
+
+        state = TUIReducer.reduce(state, action: .toggleSelection).state
+        XCTAssertEqual(state.selectedItemIDs, original)
+        XCTAssertEqual(
+            state.notice,
+            "Eligible items are selected automatically; blocked items stay protected."
+        )
+    }
+
     func testBackFromCategoriesQuits() {
         let transition = TUIReducer.reduce(TUIFixture.state(), action: .back)
         XCTAssertEqual(transition.effect, .quit)

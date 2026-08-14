@@ -9,6 +9,19 @@ if [[ ! -x "$PROJECT_ROOT/.build/release/keep" ]]; then
     echo "Release binary not found. Run swift build -c release first." >&2
     exit 1
 fi
+if [[ ! -x "$PROJECT_ROOT/.build/release/keep-privileged-helper" ]]; then
+    echo "Release privileged helper not found." >&2
+    exit 1
+fi
+[[ "$("$PROJECT_ROOT/.build/release/keep-privileged-helper" --version)" \
+    == "KeepItCleanPrivilegedHelper 0.1.0 protocol-1" ]]
+bash -n "$PROJECT_ROOT/scripts/install-helper.sh"
+grep -q '^TARGET_PATH="\$TARGET_DIRECTORY/com.minhnh510.keepitclean.helper"$' \
+    "$PROJECT_ROOT/scripts/install-helper.sh"
+if rg -n '/usr/bin/sudo .*(rm|find|sh|bash)' "$PROJECT_ROOT/scripts/install-helper.sh"; then
+    echo "Privileged installer contains an unsafe broad command." >&2
+    exit 1
+fi
 
 PREFIX="$TEST_ROOT/installed" "$PROJECT_ROOT/scripts/install-local.sh"
 [[ "$("$TEST_ROOT/installed/bin/keep" --version)" == "KeepItClean 0.1.0" ]]

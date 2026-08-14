@@ -11,9 +11,13 @@ fi
 
 [[ "$($KEEP_BINARY --version)" == "KeepItClean 0.1.0" ]]
 "$KEEP_BINARY" --help | grep -q 'scan'
-"$KEEP_BINARY" --help | grep -q 'keep --hardcore'
+"$KEEP_BINARY" --help | grep -q 'Dashboard Clean combines normal, hardcore'
 "$KEEP_BINARY" --hardcore --help | grep -q -- '--interactive'
 "$KEEP_BINARY" native-action --help | grep -q 'native-action'
+"$KEEP_BINARY" system --help | grep -q 'Root-owned system-cache cleanup'
+"$KEEP_BINARY" system scan --help | grep -q 'never mutates files'
+"$PROJECT_ROOT/.build/release/keep-privileged-helper" --version \
+    | grep -q '^KeepItCleanPrivilegedHelper 0.1.0 protocol-1$'
 "$KEEP_BINARY" scan --help | grep -q -- '--hardcore'
 "$KEEP_BINARY" clean --help | grep -q -- '--hardcore'
 "$KEEP_BINARY" clean --help | grep -q -- '--interactive'

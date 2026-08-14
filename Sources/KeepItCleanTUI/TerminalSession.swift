@@ -22,6 +22,7 @@ public enum TUIRuntimeError: Error, Equatable, LocalizedError {
 public enum TUIResult: Equatable, Sendable {
     case cancelled
     case accepted(itemIDs: [String])
+    case applyRequested(itemIDs: [String])
 }
 
 public struct TUIInputDecoder: Sendable {
@@ -71,14 +72,63 @@ public struct TUIInputDecoder: Sendable {
             case 0x20: actions.append(.toggleSelection)
             case 0x3F: actions.append(.toggleHelp)
             case 0x63: actions.append(.confirmSelection)
+            case 0x61, 0x41: actions.append(.requestApply) // a, A
             case 0x64: actions.append(.showDetail)
             case 0x68, 0x7F: actions.append(.back) // h, Backspace
             case 0x6A: actions.append(.moveDown)
             case 0x6B: actions.append(.moveUp)
+            case 0x31...0x39: actions.append(.selectIndex(Int(byte - 0x31)))
             default: break
             }
         }
         return actions
+    }
+}
+
+public final class KeepItCleanHomeRunner {
+    private let inputFD: Int32
+    private let outputFD: Int32
+    private let renderer: TUIHomeRenderer
+
+    public init(
+        inputFD: Int32 = STDIN_FILENO,
+        outputFD: Int32 = STDOUT_FILENO,
+        usesANSI: Bool = true
+    ) {
+        self.inputFD = inputFD
+        self.outputFD = outputFD
+        self.renderer = TUIHomeRenderer(usesANSI: usesANSI)
+    }
+
+    public func choose() throws -> TUIHomeChoice? {
+        let terminal = RawTerminalSession(inputFD: inputFD, outputFD: outputFD)
+        return try terminal.withRestoration {
+            let dimensions = terminal.dimensions()
+            var state = TUIHomeState(width: dimensions.width, height: dimensions.height)
+            var decoder = TUIInputDecoder()
+            var lastRenderedState: TUIHomeState?
+
+            while true {
+                let latest = terminal.dimensions()
+                state.width = latest.width
+                state.height = latest.height
+                if state != lastRenderedState {
+                    terminal.draw(renderer.render(state))
+                    lastRenderedState = state
+                }
+                let bytes = try terminal.readInput()
+                let actions = bytes.isEmpty ? decoder.flush() : decoder.feed(bytes)
+                for action in actions {
+                    let transition = TUIHomeReducer.reduce(state, action: action)
+                    state = transition.state
+                    switch transition.effect {
+                    case .none: continue
+                    case let .choose(choice): return choice
+                    case .quit: return nil
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -105,18 +155,20 @@ public final class KeepItCleanTUIRunner {
             state.width = dimensions.width
             state.height = dimensions.height
             var decoder = TUIInputDecoder()
+            var lastRenderedState: TUIState?
 
             while true {
-                terminal.draw(renderer.render(state))
+                let latestDimensions = terminal.dimensions()
+                state.width = latestDimensions.width
+                state.height = latestDimensions.height
+                if state != lastRenderedState {
+                    terminal.draw(renderer.render(state))
+                    lastRenderedState = state
+                }
                 let bytes = try terminal.readInput()
                 let actions = bytes.isEmpty ? decoder.flush() : decoder.feed(bytes)
 
                 for action in actions {
-                    if action == .moveUp || action == .moveDown {
-                        let latestDimensions = terminal.dimensions()
-                        state.width = latestDimensions.width
-                        state.height = latestDimensions.height
-                    }
                     let transition = TUIReducer.reduce(state, action: action)
                     state = transition.state
                     switch transition.effect {
@@ -126,6 +178,8 @@ public final class KeepItCleanTUIRunner {
                         return .cancelled
                     case let .acceptSelection(itemIDs):
                         return .accepted(itemIDs: itemIDs)
+                    case let .applySelection(itemIDs):
+                        return .applyRequested(itemIDs: itemIDs)
                     }
                 }
             }

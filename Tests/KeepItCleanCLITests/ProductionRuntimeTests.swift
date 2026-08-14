@@ -2,6 +2,7 @@ import Foundation
 import KeepItCleanCore
 import KeepItCleanFS
 import KeepItCleanRules
+import KeepItCleanSystem
 import Testing
 @testable import KeepItCleanCLI
 
@@ -259,6 +260,23 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     ])
 }
 
+@Test func privilegedHelperClientRejectsAUserOwnedExecutableWithoutLaunchingSudo() throws {
+    let fixture = try MarkerGuardedHome()
+    defer { try? fixture.remove() }
+    let fakeHelper = fixture.url.appendingPathComponent("fake-helper")
+    try Data("not a root helper".utf8).write(to: fakeHelper)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: fakeHelper.path
+    )
+
+    let client = PrivilegedHelperClient(helperPath: fakeHelper.path)
+    let status = client.doctor()
+    #expect(status.hasPrefix("unavailable:"))
+    #expect(status.contains("make install-helper"))
+    #expect(!client.isReady)
+}
+
 @Test func tuiReviewDerivesANewImmutablePlanID() {
     let candidate = Candidate(
         ruleID: "fixture.cache",
@@ -285,6 +303,62 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(original.items.first?.selected == false)
     #expect(TUIAdapter.state(plan: reviewed).selectedItemIDs == Set([candidate.id]))
     #expect(TUIAdapter.state(plan: original).selectedItemIDs.isEmpty)
+    #expect(TUIAdapter.state(plan: reviewed).allowsApply)
+    #expect(!TUIAdapter.state(report: ScanReport(durationSeconds: 0, candidates: [candidate])).allowsApply)
+    let automatic = TUIAdapter.automaticReviewState(plan: original)
+    #expect(automatic.usesAutomaticSelection)
+    #expect(automatic.selectedItemIDs == Set([candidate.id]))
+    #expect(automatic.screen == .confirmApply(returnTo: .categories))
+}
+
+@Test func unifiedTUICombinesDeveloperHardcoreAndSystemCandidates() throws {
+    let userCandidate = Candidate(
+        ruleID: "hardcore.gradle.transforms-retention",
+        category: "Hardcore / Gradle",
+        path: "/tmp/home/.gradle/caches/9.5.0/transforms/old",
+        displayName: "old",
+        evidence: "Older than seven days.",
+        identity: nil,
+        actionKind: .trash,
+        risk: .low,
+        rebuildCost: .low,
+        activeState: .inactive,
+        defaultSelected: false
+    )
+    let userPlan = CleanupPlan(
+        hostID: "fixture-host",
+        items: [CleanupPlanItem(candidate: userCandidate)]
+    )
+    let systemCandidate = SystemCleanupCandidate(
+        ruleID: "system.cache-files",
+        path: "/Library/Caches/vendor/old.cache",
+        displayName: "old.cache",
+        reason: "Old root-owned cache leaf.",
+        identity: FileIdentity(
+            device: 1,
+            inode: 2,
+            ownerID: 0,
+            fileKind: .regularFile,
+            logicalBytes: 8_192,
+            allocatedBytes: 8_192,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+    )
+    let system = SystemCleanupScanResult(
+        plan: SystemCleanupPlan(candidates: [systemCandidate])
+    )
+
+    let state = TUIAdapter.unifiedAutomaticReviewState(plan: userPlan, system: system)
+    let systemCategory = try #require(
+        state.categories.first { $0.id == "keepitclean-system-caches" }
+    )
+    let systemItem = try #require(systemCategory.items.first)
+    #expect(state.usesAutomaticSelection)
+    #expect(state.screen == .confirmApply(returnTo: .categories))
+    #expect(state.selectedItemIDs == Set([userCandidate.id, systemItem.id]))
+    #expect(TUIAdapter.userItemIDs(from: Array(state.selectedItemIDs)) == [userCandidate.id])
+    #expect(TUIAdapter.selectsEverySystemCandidate(Array(state.selectedItemIDs), result: system))
+    #expect(!TUIAdapter.selectsEverySystemCandidate([userCandidate.id], result: system))
 }
 
 @Test func tuiDeepPhaseUsesExactOrParentScopedRootsAndRevalidatesSelection() throws {
@@ -326,6 +400,7 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
         retaining: [exact.id, project.id]
     )
     #expect(deep.candidates.allSatisfy { $0.defaultSelected })
+    #expect(TUIAdapter.state(report: deep, allowsApply: true).allowsApply)
     #expect(throws: KeepItCleanError.self) {
         _ = try TUIAdapter.deepReviewReport(report, retaining: ["missing"])
     }
@@ -461,6 +536,114 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(FileManager.default.fileExists(atPath: retained.path))
     let trashPath = try #require(operation.items.first?.resultingTrashPath)
     #expect(FileManager.default.fileExists(atPath: trashPath))
+}
+
+@Test func hardcoreGradleTransformRetentionAppliesOnlyEntriesOlderThanSevenDays() async throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let transforms = home.url.appendingPathComponent(
+        ".gradle/caches/9.5.0/transforms", isDirectory: true
+    )
+    let old = transforms.appendingPathComponent("old-hash", isDirectory: true)
+    let recent = transforms.appendingPathComponent("recent-hash", isDirectory: true)
+    try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: recent, withIntermediateDirectories: true)
+    try Data("old".utf8).write(to: old.appendingPathComponent("output.bin"))
+    try Data("recent".utf8).write(to: recent.appendingPathComponent("output.bin"))
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(-8 * 86_400)],
+        ofItemAtPath: old.path
+    )
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(-6 * 86_400)],
+        ofItemAtPath: recent.path
+    )
+
+    let service = fixtureService(
+        home: home,
+        processSnapshotProvider: SequencedProcessSnapshotProvider([unrelatedProcessSnapshot]),
+        nativeRunner: RecordingNativeRunner()
+    )
+    let scanned = try await service.scan(
+        roots: [home.url.path],
+        deep: true,
+        hardcore: true
+    )
+    let canonicalHomePath = home.url.path.hasPrefix("/var/")
+        ? "/private" + home.url.path
+        : home.url.path
+    let canonicalHome = URL(fileURLWithPath: canonicalHomePath)
+    let canonicalTransforms = canonicalHome.appendingPathComponent(
+        ".gradle/caches/9.5.0/transforms", isDirectory: true
+    )
+    let canonicalOld = canonicalTransforms.appendingPathComponent("old-hash").path
+    let canonicalRecent = canonicalTransforms.appendingPathComponent("recent-hash").path
+    let candidate = try #require(scanned.plan.items.first {
+        $0.candidate.ruleID == "hardcore.gradle-transforms-7d"
+            && $0.candidate.path == canonicalOld
+    }?.candidate)
+    #expect(!scanned.plan.items.contains {
+        $0.candidate.ruleID == "hardcore.gradle-transforms-7d"
+            && $0.candidate.path == canonicalRecent
+    })
+    #expect(!scanned.plan.items.contains {
+        $0.candidate.actionKind == .trash && $0.candidate.path == canonicalTransforms.path
+    })
+
+    let reviewed = TUIAdapter.plan(scanned.plan, selecting: [candidate.id])
+    _ = try service.save(plan: reviewed)
+    let operation = try await service.applyTrash(plan: reviewed)
+
+    #expect(operation.state == .completed)
+    #expect(operation.items.count == 1)
+    #expect(!FileManager.default.fileExists(atPath: old.path))
+    #expect(FileManager.default.fileExists(atPath: recent.path))
+    #expect(FileManager.default.fileExists(atPath: transforms.path))
+}
+
+@Test func hardcoreCodexOldDayBucketAppliesOnlyThroughReviewedExactRule() async throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let oldDay = home.url.appendingPathComponent(
+        ".codex/sessions/2026/07/01", isDirectory: true
+    )
+    let recentDay = home.url.appendingPathComponent(
+        ".codex/sessions/2026/08/10", isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: oldDay, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: recentDay, withIntermediateDirectories: true)
+    try Data("old history".utf8).write(to: oldDay.appendingPathComponent("old.jsonl"))
+    try Data("recent history".utf8).write(to: recentDay.appendingPathComponent("recent.jsonl"))
+
+    let service = fixtureService(
+        home: home,
+        processSnapshotProvider: SequencedProcessSnapshotProvider([unrelatedProcessSnapshot]),
+        nativeRunner: RecordingNativeRunner()
+    )
+    let scanned = try await service.scan(
+        roots: [home.url.path],
+        deep: true,
+        hardcore: true
+    )
+    let candidate = try #require(scanned.plan.items.first {
+        $0.candidate.ruleID == "hardcore.codex-session-days"
+            && $0.candidate.path.hasSuffix("/.codex/sessions/2026/07/01")
+    }?.candidate)
+    #expect(candidate.actionKind == .trash)
+    #expect(!scanned.plan.items.contains {
+        $0.candidate.ruleID == "hardcore.codex-session-days"
+            && $0.candidate.path.hasSuffix("/.codex/sessions/2026/08/10")
+    })
+
+    let reviewed = TUIAdapter.plan(scanned.plan, selecting: [candidate.id])
+    _ = try service.save(plan: reviewed)
+    let operation = try await service.applyTrash(plan: reviewed)
+
+    #expect(operation.state == .completed)
+    #expect(operation.items.count == 1)
+    #expect(operation.items.first?.status == .movedToTrash)
+    #expect(!FileManager.default.fileExists(atPath: oldDay.path))
+    #expect(FileManager.default.fileExists(atPath: recentDay.path))
 }
 
 @Test func statefulNativePlansFailClosedWhenOwningToolsAreActive() throws {

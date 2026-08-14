@@ -1,15 +1,17 @@
 import Foundation
 import KeepItCleanCore
+import KeepItCleanSystem
 import KeepItCleanTUI
 
 enum TUIAdapter {
+    private static let systemItemPrefix = "keepitclean-system:"
     private static let parentScopedRules: Set<String> = [
         "project.artifacts",
         "cachedir-tag.valid",
     ]
 
-    static func state(report: ScanReport) -> TUIState {
-        state(candidates: report.candidates)
+    static func state(report: ScanReport, allowsApply: Bool = false) -> TUIState {
+        state(candidates: report.candidates, allowsApply: allowsApply)
     }
 
     static func state(plan: CleanupPlan) -> TUIState {
@@ -20,10 +22,83 @@ enum TUIAdapter {
                 && !candidate.isBlocked
             return candidate
         }
-        return state(candidates: candidates)
+        return state(candidates: candidates, allowsApply: true)
     }
 
-    private static func state(candidates: [Candidate]) -> TUIState {
+    static func automaticReviewState(report: ScanReport) -> TUIState {
+        automaticReviewState(candidates: report.candidates)
+    }
+
+    static func automaticReviewState(plan: CleanupPlan) -> TUIState {
+        automaticReviewState(candidates: plan.items.map(\.candidate))
+    }
+
+    static func unifiedAutomaticReviewState(
+        plan: CleanupPlan,
+        system: SystemCleanupScanResult?
+    ) -> TUIState {
+        var categories = automaticReviewState(plan: plan).categories
+        if let system, !system.plan.candidates.isEmpty {
+            categories.append(TUICategory(
+                id: "keepitclean-system-caches",
+                title: "System caches",
+                summary: "Root-owned cache leaves held in undoable quarantine",
+                items: system.plan.candidates.map(systemItem).sorted {
+                    if $0.reclaimableBytes == $1.reclaimableBytes {
+                        return $0.path < $1.path
+                    }
+                    return $0.reclaimableBytes > $1.reclaimableBytes
+                }
+            ))
+        }
+        return TUIState(
+            categories: categories,
+            screen: .confirmApply(returnTo: .categories),
+            allowsApply: true,
+            usesAutomaticSelection: true
+        )
+    }
+
+    static func userItemIDs(from unifiedItemIDs: [String]) -> [String] {
+        unifiedItemIDs.filter { !$0.hasPrefix(systemItemPrefix) }
+    }
+
+    static func selectsEverySystemCandidate(
+        _ unifiedItemIDs: [String],
+        result: SystemCleanupScanResult
+    ) -> Bool {
+        let selected = Set(unifiedItemIDs.filter { $0.hasPrefix(systemItemPrefix) })
+        let expected = Set(result.plan.candidates.map { systemItemPrefix + $0.id })
+        return !expected.isEmpty && selected == expected
+    }
+
+    static func eligibleItemIDs(report: ScanReport) -> [String] {
+        report.candidates
+            .filter { $0.actionKind == .trash && !$0.isBlocked }
+            .map(\.id)
+            .sorted()
+    }
+
+    private static func automaticReviewState(candidates: [Candidate]) -> TUIState {
+        var prepared = candidates
+        for index in prepared.indices {
+            prepared[index].defaultSelected = prepared[index].actionKind == .trash
+                && !prepared[index].isBlocked
+        }
+        return state(
+            candidates: prepared,
+            allowsApply: true,
+            screen: .confirmApply(returnTo: .categories),
+            usesAutomaticSelection: true
+        )
+    }
+
+    private static func state(
+        candidates: [Candidate],
+        allowsApply: Bool,
+        screen: TUIScreen = .categories,
+        usesAutomaticSelection: Bool = false
+    ) -> TUIState {
         let grouped = Dictionary(grouping: candidates, by: \.category)
         let categories = grouped.keys.sorted().map { categoryName in
             let candidates = grouped[categoryName, default: []]
@@ -40,7 +115,12 @@ enum TUIAdapter {
                 items: candidates.map(item)
             )
         }
-        return TUIState(categories: categories)
+        return TUIState(
+            categories: categories,
+            screen: screen,
+            allowsApply: allowsApply,
+            usesAutomaticSelection: usesAutomaticSelection
+        )
     }
 
     static func plan(_ original: CleanupPlan, selecting itemIDs: [String]) -> CleanupPlan {
@@ -112,6 +192,25 @@ enum TUIAdapter {
             isSelectable: candidate.actionKind == .trash && !candidate.isBlocked,
             isInitiallySelected: candidate.defaultSelected,
             age: candidate.identity.map { KeepFormatting.age(since: $0.modifiedAt) } ?? "unknown"
+        )
+    }
+
+    private static func systemItem(_ candidate: SystemCleanupCandidate) -> TUIItem {
+        TUIItem(
+            id: systemItemPrefix + candidate.id,
+            title: candidate.displayName,
+            path: candidate.path,
+            allocatedBytes: candidate.identity.allocatedBytes,
+            logicalBytes: candidate.identity.logicalBytes,
+            reclaimableBytes: candidate.reclaimableBytes,
+            risk: .safe,
+            rebuild: .automatic,
+            confidence: "high",
+            activity: .inactive,
+            reason: candidate.reason + "; destination: root-owned KeepItClean quarantine",
+            isSelectable: true,
+            isInitiallySelected: true,
+            age: KeepFormatting.age(since: candidate.identity.modifiedAt)
         )
     }
 

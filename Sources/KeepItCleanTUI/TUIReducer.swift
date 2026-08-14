@@ -9,6 +9,8 @@ public enum TUIAction: Equatable, Sendable {
     case toggleSelection
     case toggleHelp
     case confirmSelection
+    case requestApply
+    case selectIndex(Int)
     case quit
     case resize(width: Int, height: Int)
 }
@@ -16,6 +18,7 @@ public enum TUIAction: Equatable, Sendable {
 public enum TUIEffect: Equatable, Sendable {
     case none
     case acceptSelection(itemIDs: [String])
+    case applySelection(itemIDs: [String])
     case quit
 }
 
@@ -40,6 +43,15 @@ public enum TUIReducer {
         case .moveDown:
             moveCursor(in: &next, delta: 1)
         case .open:
+            if case .confirmApply = next.screen {
+                let ids = next.selectedItems.map(\.id).sorted()
+                guard !ids.isEmpty else {
+                    next.screen = .categories
+                    next.notice = "Nothing selectable is checked."
+                    return TUITransition(state: next)
+                }
+                return TUITransition(state: next, effect: .applySelection(itemIDs: ids))
+            }
             open(in: &next)
         case .back:
             if case let .help(returnTo) = next.screen {
@@ -60,6 +72,30 @@ public enum TUIReducer {
                 return TUITransition(state: next)
             }
             return TUITransition(state: next, effect: .acceptSelection(itemIDs: ids))
+        case .requestApply:
+            guard next.allowsApply else {
+                next.notice = "Finish the deep scan before applying cleanup."
+                return TUITransition(state: next)
+            }
+            guard !next.selectedItems.isEmpty else {
+                next.notice = "Nothing selectable is checked."
+                return TUITransition(state: next)
+            }
+            next.screen = .confirmApply(returnTo: returnPoint(for: next.screen))
+        case let .selectIndex(index):
+            guard index >= 0 else { break }
+            switch next.screen {
+            case .categories:
+                guard next.categories.indices.contains(index) else { break }
+                next.categoryCursor = index
+            case let .items(categoryID):
+                guard let category = next.category(withID: categoryID),
+                      category.items.indices.contains(index)
+                else { break }
+                next.itemCursors[categoryID] = index
+            case .detail, .confirmApply, .help:
+                break
+            }
         case .quit:
             return TUITransition(state: next, effect: .quit)
         case let .resize(width, height):
@@ -79,7 +115,7 @@ public enum TUIReducer {
             guard let category = state.category(withID: categoryID), !category.items.isEmpty else { return }
             let current = state.itemCursors[categoryID, default: 0]
             state.itemCursors[categoryID] = clamped(current + delta, count: category.items.count)
-        case .detail, .help:
+        case .detail, .confirmApply, .help:
             break
         }
     }
@@ -100,7 +136,7 @@ public enum TUIReducer {
             state.screen = .items(categoryID: category.id)
         case .items:
             showDetail(in: &state)
-        case .detail:
+        case .detail, .confirmApply:
             break
         case let .help(returnTo):
             state.screen = returnTo.screen
@@ -116,6 +152,8 @@ public enum TUIReducer {
             state.screen = .categories
         case let .detail(categoryID, _):
             state.screen = .items(categoryID: categoryID)
+        case let .confirmApply(returnTo):
+            state.screen = returnTo.screen
         case let .help(returnTo):
             state.screen = returnTo.screen
         }
@@ -134,6 +172,10 @@ public enum TUIReducer {
     }
 
     private static func toggleSelection(in state: inout TUIState) {
+        guard !state.usesAutomaticSelection else {
+            state.notice = "Eligible items are selected automatically; blocked items stay protected."
+            return
+        }
         switch state.screen {
         case .categories:
             guard state.categories.indices.contains(state.categoryCursor) else { return }
@@ -155,7 +197,7 @@ public enum TUIReducer {
             toggleCurrentItem(categoryID: categoryID, in: &state)
         case let .detail(categoryID, itemID):
             toggleItem(categoryID: categoryID, itemID: itemID, in: &state)
-        case .help:
+        case .confirmApply, .help:
             break
         }
     }
@@ -196,10 +238,21 @@ public enum TUIReducer {
             returnTo = .items(categoryID: categoryID)
         case let .detail(categoryID, itemID):
             returnTo = .detail(categoryID: categoryID, itemID: itemID)
+        case let .confirmApply(existing):
+            returnTo = existing
         case .help:
             return
         }
         state.screen = .help(returnTo: returnTo)
+    }
+
+    private static func returnPoint(for screen: TUIScreen) -> TUIScreenReturnPoint {
+        switch screen {
+        case .categories: .categories
+        case let .items(categoryID): .items(categoryID: categoryID)
+        case let .detail(categoryID, itemID): .detail(categoryID: categoryID, itemID: itemID)
+        case let .confirmApply(returnTo), let .help(returnTo): returnTo
+        }
     }
 
     private static func clamped(_ value: Int, count: Int) -> Int {

@@ -18,6 +18,8 @@ public struct TUIRenderer: Sendable {
             renderItems(state, categoryID: categoryID, into: &lines)
         case let .detail(categoryID, itemID):
             renderDetail(state, categoryID: categoryID, itemID: itemID, into: &lines)
+        case .confirmApply:
+            renderApplyConfirmation(state, into: &lines)
         case .help:
             renderHelp(state, into: &lines)
         }
@@ -28,7 +30,7 @@ public struct TUIRenderer: Sendable {
         }
 
         lines.append("")
-        lines.append(footer(for: state.screen))
+        lines.append(footer(for: state))
         return lines.map { clipped($0, width: state.width) }.joined(separator: "\n") + "\n"
     }
 
@@ -42,15 +44,15 @@ public struct TUIRenderer: Sendable {
             return overflow ? .max : sum
         })
 
-        lines.append(
-            style("  KEEP IT CLEAN", .title)
-                + style("   macOS developer storage", .muted)
-                + "   " + style("REVIEW ONLY", .badge)
-        )
-        lines.append(
-            style("  Trash-first", .success)
-                + style("  •  no sudo  •  no telemetry  •  nothing moves until apply", .muted)
-        )
+        let phase: String
+        switch state.screen {
+        case .confirmApply: phase = "CLEAN NOW"
+        default: phase = state.allowsApply ? "READY" : "SCAN + REVIEW"
+        }
+        lines.append(style("  KEEP IT CLEAN", .title) + style("  /  macOS developer cleaner", .muted))
+        lines.append(style("  SAFETY", .title) + "  " + style("Trash-first", .success)
+            + style(" · No data collection · Undo available", .muted)
+            + "  " + style(phase, .badge))
         lines.append("")
         lines.append(
             "  " + style("\(selected)", .accent) + " selected"
@@ -58,13 +60,13 @@ public struct TUIRenderer: Sendable {
                 + "  •  \(eligible) eligible / \(items.count) found"
                 + "  •  \(totalBytes) potential"
         )
-        lines.append("  " + selectionBar(selected: selected, eligible: eligible, width: min(42, state.width / 3)))
+        lines.append(style("  " + selectionBar(selected: selected, eligible: eligible, width: min(32, state.width / 3)), .muted))
         lines.append(rule(width: state.width))
     }
 
     private func renderCategories(_ state: TUIState, into lines: inout [String]) {
-        lines.append(style("  REVIEW CATEGORIES", .section))
-        lines.append(style("  Choose a category, inspect the evidence, then select only what you want.", .muted))
+        lines.append(style("  CLEANUP CATEGORIES", .section))
+        lines.append(style("  Inspect what will move to Trash or protected quarantine.", .muted))
         lines.append("")
 
         guard !state.categories.isEmpty else {
@@ -72,7 +74,7 @@ public struct TUIRenderer: Sendable {
             return
         }
 
-        let maximumRows = max(1, (state.height - 13) / 3)
+        let maximumRows = max(1, (state.height - 12) / 2)
         let range = visibleRange(count: state.categories.count, cursor: state.categoryCursor, limit: maximumRows)
 
         for index in range {
@@ -80,15 +82,12 @@ public struct TUIRenderer: Sendable {
             let focused = index == state.categoryCursor
             let marker = focused ? style("›", .accent) : " "
             let check = checkGlyph(state.checkmark(for: category))
-            let first = "  \(marker) \(check)  \(categoryIcon(category.title))  \(category.title)"
-                + "    " + style(ByteFormat.string(category.reclaimableBytes), .success)
-                + style(" reclaim", .muted)
+            let first = "  \(marker) \(check)  \(index + 1). \(category.title)"
+                + "  " + style(ByteFormat.string(category.reclaimableBytes), .success)
+                + style("  \(itemCount(category.items.count))", .muted)
             lines.append(focused ? style(first, .focused) : first)
-            lines.append("        \(itemCount(category.items.count))"
-                + "  •  \(ByteFormat.string(category.allocatedBytes)) allocated"
-                + "  •  " + riskLabel(category.highestRisk)
+            lines.append("       \(categoryIcon(category.title))  " + riskLabel(category.highestRisk)
                 + "  •  " + activityLabel(category.activityLabel))
-            lines.append(style("        \(category.summary)", .muted))
         }
     }
 
@@ -108,7 +107,7 @@ public struct TUIRenderer: Sendable {
         }
 
         let cursor = min(max(0, state.itemCursors[categoryID, default: 0]), category.items.count - 1)
-        let maximumRows = max(1, (state.height - 13) / 3)
+        let maximumRows = max(1, (state.height - 12) / 2)
         let range = visibleRange(count: category.items.count, cursor: cursor, limit: maximumRows)
 
         for index in range {
@@ -121,12 +120,36 @@ public struct TUIRenderer: Sendable {
             let first = "  \(marker) \(check)  \(item.title)"
                 + "    " + style(ByteFormat.string(item.reclaimableBytes), .success)
             lines.append(focused ? style(first, .focused) : first)
-            lines.append("        " + riskLabel(item.risk)
+            lines.append(style("        \(abbreviatedPath(item.path, width: max(20, state.width - 10)))", .muted)
+                + "  •  " + riskLabel(item.risk)
                 + "  •  rebuild \(item.rebuild.label)"
-                + "  •  confidence \(item.confidence)"
                 + "  •  " + activityLabel(item.activity.label))
-            lines.append(style("        \(item.path)", .muted))
         }
+    }
+
+    private func renderApplyConfirmation(_ state: TUIState, into lines: inout [String]) {
+        lines.append("")
+        lines.append(style("  CLEAN ALL VERIFIED ITEMS?", .warning))
+        lines.append("")
+        lines.append("  " + style("\(state.selectedItems.count)", .accent) + " items selected")
+        lines.append("  " + style(ByteFormat.string(state.selectedReclaimableBytes), .success) + " estimated reclaim")
+        if state.usesAutomaticSelection {
+            lines.append(style("  All eligible items were selected automatically; blocked items remain protected.", .success))
+        }
+        lines.append("")
+        lines.append("  Developer items move through the verified macOS Trash gateway.")
+        if state.categories.contains(where: { $0.id == "keepitclean-system-caches" }) {
+            lines.append("  Root-owned system items move into KeepItClean's protected quarantine.")
+        }
+        if state.categories.contains(where: { $0.id == "keepitclean-system-caches" }) {
+            lines.append("  Each engine prints its own operation ID: " + style("keep undo <ID>", .accent)
+                + " or " + style("keep system undo <ID>", .accent) + ".")
+        } else {
+            lines.append("  KeepItClean prints an operation ID for " + style("keep undo <ID>", .accent) + ".")
+        }
+        lines.append(style("  Space is reclaimed only after Trash is emptied or quarantine is finalized.", .muted))
+        lines.append("")
+        lines.append(style("  Enter  CLEAN NOW", .danger) + style("     Esc  go back", .muted))
     }
 
     private func renderDetail(
@@ -162,26 +185,50 @@ public struct TUIRenderer: Sendable {
     }
 
     private func renderHelp(_ state: TUIState, into lines: inout [String]) {
-        lines.append(style("  KEYBOARD HELP", .section))
+        lines.append(style("  SAFETY DETAILS", .section))
+        lines.append("")
+        lines.append(style("  Trash-first", .success))
+        lines.append("    Verified user files move to Trash; system cleanup uses root-owned quarantine.")
+        lines.append(style("  No data collection", .success))
+        lines.append("    No telemetry or uploads. Scan plans and journals stay on this Mac.")
+        lines.append(style("  Undo available", .success))
+        lines.append("    Use keep undo <ID> before Trash is emptied; finalize cannot be undone.")
+        lines.append("")
+        lines.append(style("  KEYBOARD", .section))
         lines.append("")
         lines.append("Up/Down or k/j    Move through rows")
         lines.append("Right/Enter/l     Drill down or show details")
         lines.append("Left/Escape/h     Go back")
         lines.append("Space             Toggle eligible selection")
         lines.append("d                 Show candidate details")
-        lines.append("c                 Accept reviewed selection")
+        lines.append(state.allowsApply
+            ? "c                 Save reviewed plan"
+            : "c                 Continue to deep verification")
+        lines.append(state.allowsApply
+            ? "a                 Review and move selection to Trash"
+            : "a                 Unavailable until deep verification")
         lines.append("?                 Show or close this help")
         lines.append("q or Ctrl-C       Quit without accepting")
         lines.append("")
-        lines.append(style("  The TUI never mutates files. It only returns reviewed item IDs.", .warning))
+        lines.append(style("  Apply uses fresh reviewed plans and the matching Trash/quarantine engine.", .warning))
     }
 
-    private func footer(for screen: TUIScreen) -> String {
-        switch screen {
+    private func footer(for state: TUIState) -> String {
+        switch state.screen {
         case .categories, .items:
-            "  ↑↓ move   enter open   space select   d details   c review   ? help   q quit"
+            state.usesAutomaticSelection
+                ? "  ↑↓ move   enter inspect   a final confirmation   ? help   q quit"
+                : state.allowsApply
+                ? "  ↑↓ move   enter open   space select   c save plan   a clean   ? help   q quit"
+                : "  ↑↓ move   enter open   space select   c deep review   ? help   q quit"
         case .detail:
-            "  space select   ←/esc back   ? help   q quit"
+            state.usesAutomaticSelection
+                ? "  a final confirmation   ←/esc back   ? help   q quit"
+                : state.allowsApply
+                ? "  space select   a clean   ←/esc back   ? help   q quit"
+                : "  space select   c deep review   ←/esc back   ? help   q quit"
+        case .confirmApply:
+            "  enter CLEAN NOW   esc cancel"
         case .help:
             "  ?/esc close help   q quit"
         }
@@ -227,6 +274,11 @@ public struct TUIRenderer: Sendable {
 
     private func itemCount(_ count: Int) -> String {
         "\(count) " + (count == 1 ? "item" : "items")
+    }
+
+    private func abbreviatedPath(_ path: String, width: Int) -> String {
+        guard path.count > width, width > 4 else { return path }
+        return "…" + path.suffix(width - 1)
     }
 
     private func riskLabel(_ risk: TUIRisk) -> String {

@@ -399,10 +399,8 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
             // The fd-relative mover repeats identity checks while holding the
             // exact source/destination parent descriptors used by renameatx_np.
             let selectedPaths = selected.map { $0.candidate.path }.sorted()
-            for (index, path) in selectedPaths.enumerated() {
-                if selectedPaths[(index + 1)...].contains(where: {
-                    $0 == path || $0.hasPrefix(path + "/")
-                }) {
+            for (path, nextPath) in zip(selectedPaths, selectedPaths.dropFirst()) {
+                if nextPath == path || nextPath.hasPrefix(path + "/") {
                     throw KeepItCleanError.invalidPath("Overlapping cleanup selections: \(path)")
                 }
             }
@@ -442,6 +440,16 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
             )
             try operationStore.append(operation: record)
 
+            // Small operations retain the strongest per-item checkpoint and
+            // rollback behavior. Large retention sweeps (for example tens of
+            // thousands of Gradle transform directories) checkpoint in
+            // bounded batches instead of rewriting the complete journal after
+            // every rename. The initial record already durably contains every
+            // deterministic source/destination intent, so interrupted pending
+            // items remain recoverable by `recoverInterruptedTrashApply`.
+            let persistEveryItem = selected.count <= 256
+            let checkpointStride = 1_024
+
             for index in selected.indices {
                 let candidate = selected[index].candidate
                 let identity = candidate.identity!
@@ -464,25 +472,27 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
                     }
                     record.items[index].status = .movedToTrash
 
-                    do {
-                        // Persist the resulting Trash URL before any later
-                        // verification can fail or the process can stop.
-                        try operationStore.append(operation: record)
-                    } catch {
+                    if persistEveryItem {
                         do {
-                            try mover.restoreFromTrash(
-                                moved,
-                                expectedIdentity: identity,
-                                to: URL(fileURLWithPath: candidate.path)
-                            )
-                            destination = nil
-                            record.items[index].status = .failed
-                        } catch let rollbackError {
-                            throw KeepItCleanError.io(
-                                "History write and rollback both failed. Recover from \(moved.path): \(rollbackError.localizedDescription)"
-                            )
+                            // Persist the resulting Trash URL before any later
+                            // verification can fail or the process can stop.
+                            try operationStore.append(operation: record)
+                        } catch {
+                            do {
+                                try mover.restoreFromTrash(
+                                    moved,
+                                    expectedIdentity: identity,
+                                    to: URL(fileURLWithPath: candidate.path)
+                                )
+                                destination = nil
+                                record.items[index].status = .failed
+                            } catch let rollbackError {
+                                throw KeepItCleanError.io(
+                                    "History write and rollback both failed. Recover from \(moved.path): \(rollbackError.localizedDescription)"
+                                )
+                            }
+                            throw error
                         }
-                        throw error
                     }
                 } catch {
                     if destination == nil {
@@ -490,7 +500,9 @@ public final class FileMutationGateway: MutationGateway, @unchecked Sendable {
                     }
                     record.items[index].message = error.localizedDescription
                 }
-                try operationStore.append(operation: record)
+                if persistEveryItem || (index + 1).isMultiple(of: checkpointStride) {
+                    try operationStore.append(operation: record)
+                }
             }
 
             finish(&record)

@@ -2,6 +2,84 @@ import Darwin
 import Foundation
 import KeepItCleanCore
 
+public struct HardcoreGradleTransformRetentionAdapter: RuleAdapter, Sendable {
+    public static let retentionDays = 7
+
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.gradle-transforms-7d",
+        name: "Gradle transform seven-day retention",
+        category: "Hardcore / Gradle transforms",
+        summary: "Keep the seven most recent days of Gradle transforms and move older entries to Trash.",
+        explicitNonTargets: [
+            "transform entries modified within the last seven days",
+            "modules-2, build cache, wrapper distributions, properties, and credentials",
+            "the transforms root or any Gradle version root",
+            "any transform while Gradle process state is active or unknown",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let caches = join(request.homePath, ".gradle/caches")
+        guard fileSystem.fileExists(at: caches) else { return [] }
+
+        let cutoff = request.now.addingTimeInterval(
+            -Double(Self.retentionDays) * 86_400
+        )
+        let activeState = processes.state(matching: [
+            "exe:gradle", "exe:gradlew", "arg:org.gradle.launcher.daemon", "arg:gradledaemon",
+        ])
+        var candidates: [Candidate] = []
+
+        for versionDirectory in try fileSystem.immediateChildren(at: caches).sorted() {
+            guard ParsedToolVersion(basename(versionDirectory)) != nil,
+                  (try? fileSystem.identity(at: versionDirectory).fileKind) == .directory
+            else { continue }
+
+            for transformsRoot in try fileSystem.immediateChildren(at: versionDirectory).sorted() {
+                let rootName = basename(transformsRoot)
+                guard rootName == "transforms" || rootName.hasPrefix("transforms-"),
+                      (try? fileSystem.identity(at: transformsRoot).fileKind) == .directory
+                else { continue }
+
+                for entry in try fileSystem.immediateChildren(at: transformsRoot).sorted() {
+                    guard isInScope(entry, roots: request.roots) else { continue }
+                    let identity = try fileSystem.identity(at: entry)
+                    guard identity.fileKind == .directory,
+                          identity.modifiedAt < cutoff
+                    else { continue }
+                    var candidate = try makeHardcoreCandidate(
+                        descriptor: descriptor,
+                        path: entry,
+                        displayName: "Gradle \(basename(versionDirectory)) transform / \(basename(entry))",
+                        evidence: "transform entry older than the seven-day retention cutoff; recent siblings and the transforms root are retained",
+                        risk: .low,
+                        rebuildCost: .medium,
+                        activeState: activeState,
+                        request: request,
+                        fileSystem: fileSystem
+                    )
+                    if activeState != .inactive {
+                        candidate.blockReason = activeState == .active
+                            ? "Gradle is active. Stop its daemons with your project-approved Gradle command, then rescan."
+                            : "Gradle process state is unknown. Prove it inactive, then rescan."
+                    }
+                    candidates.append(candidate)
+                }
+            }
+        }
+        return candidates.sorted(by: candidatePathOrder)
+    }
+}
+
 public struct HardcoreGradleVersionAdapter: RuleAdapter, Sendable {
     public let descriptor = RuleDescriptor(
         id: "hardcore.gradle-versions",
@@ -168,6 +246,301 @@ public struct HardcoreNDKVersionAdapter: RuleAdapter, Sendable {
     }
 }
 
+public struct HardcoreAndroidPlatformAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.android-platforms",
+        name: "Hardcore Android SDK platform retention",
+        category: "Hardcore / Android",
+        summary: "Keep every project-referenced compile SDK plus the newest installed platform.",
+        explicitNonTargets: [
+            "project-referenced compile SDK platforms",
+            "the newest installed Android SDK platform",
+            "build-tools, system images, emulator, AVD data, keys, licenses, and SDK roots",
+            "any platform while Gradle, Android Studio, or sdkmanager is active or unknown",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let platformRoot = join(request.homePath, "Library/Android/sdk/platforms")
+        guard fileSystem.fileExists(at: platformRoot),
+              isInScope(platformRoot, roots: request.roots)
+        else { return [] }
+
+        let installed = try fileSystem.immediateChildren(at: platformRoot).compactMap {
+            child -> Int? in
+            guard let api = androidAPI(basename(child)),
+                  (try? fileSystem.identity(at: child).fileKind) == .directory
+            else { return nil }
+            return api
+        }
+        guard let newest = installed.max() else { return [] }
+
+        let referenced = try ProjectVersionReferenceScanner(fileSystem: fileSystem)
+            .scan(roots: request.roots).androidAPIs
+        let retained = referenced.intersection(installed).union([newest])
+        let activeState = processes.state(matching: [
+            "exe:gradle", "exe:gradlew", "exe:sdkmanager",
+            "arg:org.gradle.launcher.daemon", "arg:/android studio.app/",
+        ])
+        let retainedText = retained.sorted().map(String.init).joined(separator: ", ")
+
+        return try installed
+            .filter { !retained.contains($0) }
+            .map { api in
+                try makeHardcoreCandidate(
+                    descriptor: descriptor,
+                    path: join(platformRoot, "android-\(api)"),
+                    displayName: "Android SDK platform \(api)",
+                    evidence: "project compileSdk references were scanned; retained API \(retainedText); platform is redownloadable with sdkmanager",
+                    risk: .high,
+                    rebuildCost: .high,
+                    activeState: activeState,
+                    request: request,
+                    fileSystem: fileSystem
+                )
+            }
+            .sorted(by: candidatePathOrder)
+    }
+}
+
+public struct HardcoreCodexSessionRetentionAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.codex-session-days",
+        name: "Hardcore Codex session retention",
+        category: "Hardcore / Codex history",
+        summary: "Keep the latest seven calendar days and offer older day buckets for explicit Trash review.",
+        explicitNonTargets: [
+            "the latest seven calendar days",
+            "all Codex sessions while Codex is active or process state is unknown",
+            "memories, SQLite, credentials, config, skills, attachments, and worktrees",
+            "automatic selection or permanent deletion",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let sessionsRoot = join(request.homePath, ".codex/sessions")
+        guard fileSystem.fileExists(at: sessionsRoot),
+              isInScope(sessionsRoot, roots: request.roots)
+        else { return [] }
+
+        let cutoff = codexSessionCutoff(now: request.now)
+        let activeState = processes.state(matching: [
+            "exe:codex", "arg:/codex.app/", "arg:/library/application support/codex",
+            "arg:features.code_mode_host=true app-server",
+        ])
+        var days: [(path: String, date: Date)] = []
+        for year in try fileSystem.immediateChildren(at: sessionsRoot) {
+            guard isNumericDirectory(year, digits: 4, fileSystem: fileSystem) else { continue }
+            for month in try fileSystem.immediateChildren(at: year) {
+                guard isNumericDirectory(month, digits: 2, fileSystem: fileSystem) else { continue }
+                for day in try fileSystem.immediateChildren(at: month) {
+                    guard isNumericDirectory(day, digits: 2, fileSystem: fileSystem),
+                          let date = sessionDate(year: basename(year), month: basename(month), day: basename(day)),
+                          date < cutoff,
+                          !(try fileSystem.immediateChildren(at: day)).isEmpty
+                    else { continue }
+                    days.append((day, date))
+                }
+            }
+        }
+
+        return try days.map { day in
+            try makeHardcoreCandidate(
+                descriptor: descriptor,
+                path: day.path,
+                displayName: "Codex sessions \(codexDayFormatter.string(from: day.date))",
+                evidence: "session history older than the seven-day retention window; export/archive is recommended before Trash",
+                risk: .high,
+                rebuildCost: .notApplicable,
+                activeState: activeState,
+                request: request,
+                fileSystem: fileSystem
+            )
+        }.sorted(by: candidatePathOrder)
+    }
+}
+
+public struct HardcoreCodexCorruptSnapshotAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.codex-corrupt-snapshots",
+        name: "Hardcore old Codex corrupt snapshots",
+        category: "Hardcore / Codex recovery",
+        summary: "Offer timestamped corrupt snapshots older than 30 days for explicit Trash review.",
+        explicitNonTargets: [
+            "snapshots newer than 30 days or without a valid timestamp",
+            "snapshots while Codex is active or process state is unknown",
+            "automatic selection or claims that the snapshot is redundant",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let cutoff = request.now.addingTimeInterval(-30 * 86_400)
+        let activeState = processes.state(matching: [
+            "exe:codex", "arg:/codex.app/", "arg:/library/application support/codex",
+            "arg:features.code_mode_host=true app-server",
+        ])
+        let snapshots = try fileSystem.immediateChildren(at: request.homePath).compactMap {
+            path -> (String, Date)? in
+            guard isInScope(path, roots: request.roots),
+                  let date = corruptSnapshotDate(basename(path)),
+                  date < cutoff,
+                  (try? fileSystem.identity(at: path).fileKind) == .directory
+            else { return nil }
+            return (path, date)
+        }
+
+        return try snapshots.map { snapshot in
+            try makeHardcoreCandidate(
+                descriptor: descriptor,
+                path: snapshot.0,
+                displayName: basename(snapshot.0),
+                evidence: "timestamped recovery snapshot from \(codexDayFormatter.string(from: snapshot.1)); may contain unique history and must be reviewed",
+                risk: .high,
+                rebuildCost: .notApplicable,
+                activeState: activeState,
+                request: request,
+                fileSystem: fileSystem
+            )
+        }.sorted(by: candidatePathOrder)
+    }
+}
+
+public struct HardcoreCoreSimulatorCacheAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.coresimulator-caches",
+        name: "Hardcore CoreSimulator image/dyld caches",
+        category: "Hardcore / Xcode Simulator",
+        summary: "Exact user-scoped CoreSimulator Images and dyld cache roots that can be rebuilt.",
+        explicitNonTargets: [
+            "simulator devices, userdata, runtimes, DeviceSupport, Xcode archives, and /Library",
+            "any cache while Xcode, Simulator, simctl, or CoreSimulatorService is active or unknown",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let activeState = processes.state(matching: [
+            "exe:xcode", "exe:xcodebuild", "exe:simctl", "exe:simulator",
+            "arg:/xcode.app/", "arg:coresimulatorservice",
+        ])
+        let paths = [
+            "Library/Developer/CoreSimulator/Images",
+            "Library/Developer/CoreSimulator/Caches/Images",
+            "Library/Developer/CoreSimulator/Caches/dyld",
+            "Library/Developer/CoreSimulator/Caches/dyld_sim",
+        ].map { join(request.homePath, $0) }.filter {
+            fileSystem.fileExists(at: $0) && isInScope($0, roots: request.roots)
+        }
+
+        return try paths.map { path in
+            try makeHardcoreCandidate(
+                descriptor: descriptor,
+                path: path,
+                displayName: "CoreSimulator \(basename(path)) cache",
+                evidence: "exact user-scoped CoreSimulator cache root; regenerated by Xcode/Simulator",
+                risk: .review,
+                rebuildCost: .medium,
+                activeState: activeState,
+                request: request,
+                fileSystem: fileSystem
+            )
+        }.sorted(by: candidatePathOrder)
+    }
+}
+
+public struct HardcoreAVDSnapshotAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.android-avd-snapshots",
+        name: "Hardcore Android AVD snapshots",
+        category: "Hardcore / Android AVD",
+        summary: "Offer exact snapshot roots inside configured AVDs while preserving userdata and the AVD itself.",
+        explicitNonTargets: [
+            "AVD userdata, sdcard, config, keys, and the .avd directory",
+            "cache.img leaves already handled by android.avd-cache",
+            "any snapshot while an emulator is active or process state is unknown",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let avdRoot = join(request.homePath, ".android/avd")
+        guard fileSystem.fileExists(at: avdRoot), isInScope(avdRoot, roots: request.roots) else {
+            return []
+        }
+        let activeState = processes.state(matching: [
+            "exe:emulator", "arg:qemu-system-", "arg:-avd ",
+        ])
+        let snapshots = try fileSystem.immediateChildren(at: avdRoot).compactMap {
+            avd -> String? in
+            guard basename(avd).hasSuffix(".avd"),
+                  (try? fileSystem.identity(at: avd).fileKind) == .directory
+            else { return nil }
+            let path = join(avd, "snapshots")
+            guard fileSystem.fileExists(at: path),
+                  (try? fileSystem.identity(at: path).fileKind) == .directory
+            else { return nil }
+            return path
+        }
+
+        return try snapshots.map { path in
+            try makeHardcoreCandidate(
+                descriptor: descriptor,
+                path: path,
+                displayName: "\(basename(URL(fileURLWithPath: path).deletingLastPathComponent().path)) snapshots",
+                evidence: "exact snapshots root; AVD userdata/config are retained; cold boot will be required",
+                risk: .high,
+                rebuildCost: .notApplicable,
+                activeState: activeState,
+                request: request,
+                fileSystem: fileSystem
+            )
+        }.sorted(by: candidatePathOrder)
+    }
+}
+
 public struct HardcoreBuildArtifactAdapter: RuleAdapter, Sendable {
     public let descriptor = RuleDescriptor(
         id: "hardcore.build-artifacts",
@@ -206,7 +579,9 @@ public struct HardcoreBuildArtifactAdapter: RuleAdapter, Sendable {
         var generatedRoots: [GeneratedBuildRoot] = []
         var visited = Set<HardcoreFileKey>()
         var visitedCount = 0
-        for root in uniqueSorted(request.roots) where fileSystem.fileExists(at: root) {
+        for root in uniqueSorted(request.roots)
+            where fileSystem.fileExists(at: root) && !isHardcoreToolStorageRoot(root)
+        {
             let identity = try fileSystem.identity(at: root)
             guard identity.fileKind == .directory else { continue }
             try discoverGeneratedRoots(
@@ -428,6 +803,7 @@ public struct HardcoreBuildArtifactAdapter: RuleAdapter, Sendable {
 private struct ProjectVersionReferences {
     var gradle = Set<String>()
     var ndk = Set<String>()
+    var androidAPIs = Set<Int>()
 }
 
 private struct ProjectVersionReferenceScanner {
@@ -442,7 +818,9 @@ private struct ProjectVersionReferenceScanner {
         var references = ProjectVersionReferences()
         var visited = Set<HardcoreFileKey>()
         var count = 0
-        for root in uniqueSorted(roots) where fileSystem.fileExists(at: root) {
+        for root in uniqueSorted(roots)
+            where fileSystem.fileExists(at: root) && !isHardcoreToolStorageRoot(root)
+        {
             let identity = try fileSystem.identity(at: root)
             if identity.fileKind == .regularFile {
                 try inspect(path: root, references: &references)
@@ -520,12 +898,20 @@ private struct ProjectVersionReferenceScanner {
                 pattern: #"ndkVersion\s*(?:=)?\s*[\"']([0-9][0-9A-Za-z.+_-]*)[\"']"#,
                 text: text
             ))
+            references.androidAPIs.formUnion(captures(
+                pattern: #"(?:compileSdk|compileSdkVersion)\s*(?:=)?\s*\(?\s*([0-9]{1,3})"#,
+                text: text
+            ).compactMap(Int.init))
         }
         if name == "gradle.properties" {
             references.ndk.formUnion(captures(
                 pattern: #"(?m)^\s*(?:android\.)?ndkVersion\s*=\s*([0-9][0-9A-Za-z.+_-]*)\s*$"#,
                 text: text
             ))
+            references.androidAPIs.formUnion(captures(
+                pattern: #"(?m)^\s*(?:android\.)?compileSdk\s*=\s*([0-9]{1,3})\s*$"#,
+                text: text
+            ).compactMap(Int.init))
         }
     }
 }
@@ -725,4 +1111,72 @@ private func isInScope(_ path: String, roots: [String]) -> Bool {
 
 private func candidatePathOrder(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
     lhs.path < rhs.path
+}
+
+private func isHardcoreToolStorageRoot(_ rawPath: String) -> Bool {
+    let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+    let stateComponents: Set<String> = [
+        ".android", ".codex", ".colima", ".gradle", ".konan", ".m2",
+        "node_modules", "Pods",
+    ]
+    if !stateComponents.isDisjoint(with: path.split(separator: "/").map(String.init)) {
+        return true
+    }
+    return path.contains("/Library/Android/sdk")
+        || path.contains("/Library/Developer/CoreSimulator")
+        || path.contains("/Library/Developer/Xcode/DerivedData")
+        || path.contains("/Library/Containers/com.docker.docker")
+}
+
+private func androidAPI(_ name: String) -> Int? {
+    guard name.range(of: #"^android-[0-9]{1,3}$"#, options: .regularExpression) != nil else {
+        return nil
+    }
+    return Int(name.dropFirst("android-".count))
+}
+
+private let codexDayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.isLenient = false
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+}()
+
+private func codexSessionCutoff(now: Date) -> Date {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    let start = calendar.startOfDay(for: now)
+    return calendar.date(byAdding: .day, value: -7, to: start) ?? start
+}
+
+private func sessionDate(year: String, month: String, day: String) -> Date? {
+    codexDayFormatter.date(from: "\(year)-\(month)-\(day)")
+}
+
+private func isNumericDirectory(
+    _ path: String,
+    digits: Int,
+    fileSystem: any FileSystemReading
+) -> Bool {
+    let name = basename(path)
+    guard name.count == digits, name.allSatisfy(\.isNumber) else { return false }
+    return (try? fileSystem.identity(at: path).fileKind) == .directory
+}
+
+private func corruptSnapshotDate(_ name: String) -> Date? {
+    let values = captures(
+        pattern: #"^\.codex\.corrupt\.([0-9]{8})(?:-[0-9]{6})?$"#,
+        text: name
+    )
+    guard let value = values.first else { return nil }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    formatter.isLenient = false
+    formatter.dateFormat = "yyyyMMdd"
+    return formatter.date(from: value)
 }

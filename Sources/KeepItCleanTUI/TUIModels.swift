@@ -146,6 +146,7 @@ public enum TUIScreen: Equatable, Sendable {
     case categories
     case items(categoryID: String)
     case detail(categoryID: String, itemID: String)
+    case confirmApply(returnTo: TUIScreenReturnPoint)
     case help(returnTo: TUIScreenReturnPoint)
 }
 
@@ -164,12 +165,16 @@ public struct TUIState: Equatable, Sendable {
     public var width: Int
     public var height: Int
     public var notice: String?
+    public let allowsApply: Bool
+    public let usesAutomaticSelection: Bool
 
     public init(
         categories: [TUICategory],
         screen: TUIScreen = .categories,
         width: Int = 100,
-        height: Int = 30
+        height: Int = 30,
+        allowsApply: Bool = false,
+        usesAutomaticSelection: Bool = false
     ) {
         self.categories = categories
         self.screen = screen
@@ -183,6 +188,8 @@ public struct TUIState: Equatable, Sendable {
         self.width = max(60, width)
         self.height = max(16, height)
         self.notice = nil
+        self.allowsApply = allowsApply
+        self.usesAutomaticSelection = usesAutomaticSelection
     }
 
     public var selectedItems: [TUIItem] {

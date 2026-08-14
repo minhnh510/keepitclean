@@ -1,5 +1,6 @@
 import Foundation
 import KeepItCleanCore
+import KeepItCleanTUI
 
 struct JSONEnvelope<Payload: Encodable>: Encodable {
     let schemaVersion = keepItCleanSchemaVersion
@@ -95,6 +96,40 @@ enum HumanOutput {
         CLIOutput.text("Operation \(operation.id.uuidString): \(operation.kind.rawValue) / \(operation.state.rawValue)")
         for item in operation.items {
             CLIOutput.text("- \(item.status.rawValue): \(item.originalPath)\(item.message.map { " — \($0)" } ?? "")")
+        }
+    }
+
+    static func trashOutcome(_ operation: OperationRecord) {
+        Self.operation(operation)
+        switch operation.state {
+        case .completed:
+            CLIOutput.text("Moved to Trash. Disk space is reclaimed only after Trash is emptied.")
+            CLIOutput.text("Undo with: keep undo \(operation.id.uuidString)")
+        case .partial:
+            CLIOutput.warning("Cleanup completed only partially. Review the operation before retrying.")
+            CLIOutput.text("Recover moved items with: keep undo \(operation.id.uuidString)")
+        case .failed, .running, .planned:
+            CLIOutput.warning("Cleanup did not complete. No reclaimed-space claim is being made.")
+            CLIOutput.text("Inspect with: keep history")
+        }
+    }
+}
+
+enum TrashApplyUI {
+    static func run(
+        plan: CleanupPlan,
+        service: any KeepCommandServing
+    ) async throws -> OperationRecord {
+        let selected = plan.selectedItems
+        let bytes = selected.reduce(UInt64(0)) { partial, item in
+            let (sum, overflow) = partial.addingReportingOverflow(item.candidate.reclaimableBytes)
+            return overflow ? .max : sum
+        }
+        return try await TUITrashProgress.run(
+            itemCount: selected.count,
+            reclaimableBytes: bytes
+        ) {
+            try await service.applyTrash(plan: plan)
         }
     }
 }
