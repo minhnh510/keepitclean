@@ -12,7 +12,7 @@ else
 fi
 TARGET_DIRECTORY="/Library/PrivilegedHelperTools"
 TARGET_PATH="$TARGET_DIRECTORY/com.minhnh510.keepitclean.helper"
-EXPECTED_IDENTITY="KeepItCleanPrivilegedHelper 0.1.0 protocol-1"
+EXPECTED_IDENTITY="KeepItCleanPrivilegedHelper 0.1.1 protocol-1"
 
 if [[ ! -x "$SOURCE_BINARY" ]]; then
     echo "Missing release helper: $SOURCE_BINARY" >&2

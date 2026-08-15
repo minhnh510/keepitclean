@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.1}"
 ARCHIVE_ROOT="keepitclean-v${VERSION}-macos-universal"
 ARCHIVE_NAME="${ARCHIVE_ROOT}.tar.gz"
 DIST_DIR="$PROJECT_ROOT/dist"

@@ -1,7 +1,7 @@
 import Foundation
 
 public let keepItCleanSchemaVersion = 1
-public let keepItCleanVersion = "0.1.0"
+public let keepItCleanVersion = "0.1.1"
 
 public enum FileKind: String, Codable, CaseIterable, Sendable {
     case regularFile

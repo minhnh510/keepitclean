@@ -11,7 +11,7 @@ if [[ ! -x "$SOURCE_BINARY" ]]; then
     echo "Release binary is missing: $SOURCE_BINARY" >&2
     exit 1
 fi
-if [[ "$($SOURCE_BINARY --version 2>/dev/null)" != "KeepItClean 0.1.0" ]]; then
+if [[ "$($SOURCE_BINARY --version 2>/dev/null)" != "KeepItClean 0.1.1" ]]; then
     echo "Refusing to install a release binary with an unexpected identity." >&2
     exit 1
 fi
