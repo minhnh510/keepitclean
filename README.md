@@ -18,7 +18,24 @@ The product is a GPL-3.0 Swift port derived from the safety ideas and history of
 - Xcode 16 or a compatible Swift 6 toolchain
 - Apple Silicon or Intel Mac
 
-## Build
+## Install with Homebrew
+
+```bash
+brew install minhnh510/tap/keepitclean
+keep --version
+keep
+```
+
+This fully qualified install trusts only the KeepItClean Formula from the
+[official project tap](https://github.com/minhnh510/homebrew-tap). Normal and
+hardcore developer cleanup stay user-scoped. Homebrew does not install the
+optional privileged System Clean helper automatically; after reviewing it, run:
+
+```bash
+"$(brew --prefix keepitclean)/libexec/install-helper.sh"
+```
+
+## Build from source
 
 ```bash
 swift build
