@@ -1,4 +1,4 @@
-# EditorConfig for Mole project
+# EditorConfig for KeepItClean
 # https://editorconfig.org
 
 root = true
@@ -9,7 +9,7 @@ end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
 
-[*.{sh,bash}]
+[*.swift]
 indent_style = space
 indent_size = 4
 # shfmt will use these settings automatically

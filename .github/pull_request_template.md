@@ -1,18 +1,12 @@
-## Summary
+## What changed
 
-- Describe the change.
+## Why
 
-## Safety Review
+## Safety boundaries and explicit non-targets
 
-- Does this change affect cleanup, uninstall, optimize, installer, remove, analyze delete, update, or install behavior?
-- Does this change affect path validation, protected directories, symlink handling, sudo boundaries, or release/install integrity?
-- If yes, describe the new boundary or risk change clearly.
+## Validation
 
-## Tests
-
-- List the automated tests you ran.
-- List any manual checks for high-risk paths or destructive flows.
-
-## Safety-related changes
-
-- None.
+- [ ] `swift test`
+- [ ] `swift build -c release`
+- [ ] `./scripts/verify-safety.sh`
+- [ ] Live verification, if any, was scan/dry-run only

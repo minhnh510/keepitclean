@@ -1,0 +1,30 @@
+name: Cleanup rule proposal
+description: Propose an evidence-backed developer-storage rule.
+title: "[Rule]: "
+labels: [enhancement]
+body:
+  - type: input
+    id: tool
+    attributes:
+      label: Tool and version
+    validations:
+      required: true
+  - type: textarea
+    id: targets
+    attributes:
+      label: Exact disposable paths and evidence
+      description: Explain how rebuildability and references can be proven.
+    validations:
+      required: true
+  - type: textarea
+    id: exclusions
+    attributes:
+      label: Protected siblings and state
+      description: Include credentials, sessions, databases, user data, and active-process handling.
+    validations:
+      required: true
+  - type: textarea
+    id: native
+    attributes:
+      label: Official native command, if any
+      description: Provide exact executable and argv; never provide a shell command string.

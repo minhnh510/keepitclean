@@ -1,0 +1,43 @@
+# Rule catalog and non-targets
+
+Rules emit evidence-backed candidates. A directory name alone is never sufficient evidence.
+
+| Adapter | Reviewable targets | Explicit non-targets |
+|---|---|---|
+| Gradle | old `.tmp` and build cache; in hardcore mode, individual version-scoped transform entries older than 7 exact days | every transform entry from the latest 7 days, the transforms/version roots, live or unknown daemon state, wrapper/dependency stores, credentials and arbitrary `~/.gradle` siblings; whole transform roots and wrapper versions remain report-only |
+| LLDB | known module and remote-platform caches while debuggers are inactive | `.lldbinit`, history, scripts, plugins |
+| Kotlin/Native | exact compilation cache leaf; downloaded distributions/dependencies are report-only in v0.1 | every distribution/dependency without project-reference proof; architecture is never inferred unused from host CPU alone |
+| Codex | exact cache/staging leaves; hardcore review of complete session day buckets older than 7 days and timestamped corrupt snapshots older than 30 days | session root/latest 7 days/individual JSONL, archived sessions, SQLite, memories, credentials, config, skills, attachments, generated user assets and worktree state |
+| Android | cache leaves; hardcore old unreferenced SDK platforms and exact AVD snapshot roots; explicit whole-AVD native actions | referenced/newest SDK platform, ADB keys, keystores, AVD userdata, SD cards, config and whole AVDs without a native-action plan |
+| Colima/Docker | read-only allocation report and exact native Docker prune or Colima stop plans | VM disks, images, containers and volumes through raw filesystem deletion |
+| CocoaPods | exact download caches through `pod cache` native actions | all repo indexes, private repos and project source |
+| Maven | artifacts proven remote/re-downloadable | `maven-metadata-local.xml`, locally installed/published artifacts and unknown repositories |
+| Xcode | individual DerivedData children; exact user-scoped CoreSimulator `Images` and `dyld` caches in hardcore mode after active-state checks | Archives, signing data, simulator devices/userdata/runtimes and current device support |
+| VS Code | manifest-verified older directories are reported when a newer semantic version of the same exact extension ID exists | newest/single-version extensions, raw directory deletion, settings, profiles, credentials and extension data; the official CLI can uninstall only the extension as a whole, so old-version findings stay report-only |
+| Downloads | old installer/archive files explicitly selected by the user | documents, media and arbitrary Downloads content |
+| Projects | exact generated directories below configured roots | repository/worktree roots, `.git`, source, ignored private state and unknown build output |
+| Generic cache | known owner adapters or a valid `CACHEDIR.TAG` leaf | blanket `.cache` cleanup and active model/runtime caches |
+| Hardcore retention | Gradle transform entries older than 7 days, older Gradle/NDK/Android platform versions, old Codex day buckets/recovery snapshots, AVD snapshots, CoreSimulator caches, and older same-name `.app/.so/.o/.a` members inside proven generated roots | recent Gradle transforms, transforms roots, retained/reference state, recent Codex history, AVD userdata/config, newest artifact, source/vendor binaries, unproven output, or any active/unknown owning tool |
+| System cleanup (combined Clean; optional helper) | exact root-owned regular files older than 7 days under `/Library/Caches`; known crash reports older than 7 days; rotated compressed/numbered logs older than 14 days | cache/log directories, symlinks, live logs, Software Update/MobileAsset stores, databases, mount crossings, `/System`, or arbitrary `/Library` and `/private/var` content |
+
+## Default selection
+
+Read-only `scan`/preview plans do not move anything. The interactive TUI automatically selects only inactive, user-owned, exact Trash candidates after their age, ownership, activity, and protected-path checks pass, then requires one final `Enter` confirmation. Recent, stateful, native, report-only, or blocked findings never enter that apply set.
+
+## Hardcore retention
+
+`keep --hardcore` (an alias of `keep clean --hardcore --interactive`) opens interactive cleanup with live scan progress. `keep scan --hardcore` and `keep clean --hardcore` remain read-only previews. Interactive cleanup selects all exact eligible candidates automatically, keeps blocked/active candidates protected, and opens directly on the final Trash confirmation; `Enter` applies the fresh saved plan through the filesystem gateway, while `Esc` allows inspection. The retention adapters perform deep accounting while the normal catalog remains a fast inventory, so an unrelated huge cache cannot stall the hardcore review. The scan writes a short-lived 30-minute plan but never mutates target data.
+
+For Gradle transforms, hardcore mode enumerates only immediate child directories under `~/.gradle/caches/<version>/transforms*`. An entry is eligible only when its directory mtime is strictly older than 7 days at scan and again at apply. Recent entries, every transforms root, version root, `modules-2`, wrapper distributions, credentials, and unrelated Gradle state are retained. A live or unknown Gradle process blocks the entire rule; v0.1 does not launch `gradle --stop` itself because native execution remains disabled, so stop daemons with the project-approved Gradle command and rescan. Large sweeps are pre-journaled in full, revalidated once per rule, overlap-checked in sorted order, and status-checkpointed in bounded batches so tens of thousands of exact Trash moves remain recoverable without rewriting the full history after every item.
+
+Gradle wrapper, Android `ndkVersion`, and `compileSdk` metadata are scanned before choosing retained installed versions. Every referenced installed Android platform is retained together with the newest installed platform. If no project reference can be found, the highest installed version is retained rather than deleting every toolchain.
+
+Codex history is handled as stateful user data. Hardcore mode can offer only one complete `~/.codex/sessions/YYYY/MM/DD` bucket older than the seven-day window; the session root, year/month roots, individual JSONL files, and recent buckets remain protected by `PathValidator`. Codex must be proven inactive both during scan and immediately before apply. Old timestamped `.codex.corrupt.YYYYMMDD-HHMMSS` snapshots require a 30-day age threshold and remain high-risk because uniqueness is not inferred. AVD cleanup similarly targets only `snapshots`; userdata, sdcard, config and the `.avd` directory are excluded. CoreSimulator cleanup is restricted to exact user-scoped `Images`, `Caches/Images`, `Caches/dyld`, and `Caches/dyld_sim` roots while Xcode/Simulator/CoreSimulator are inactive.
+
+Build-file retention is narrower than an extension search. Only tool-owned generated roots with exact markers are traversed. Artifacts are grouped by project plus exact filename, newest mtime wins deterministically, `.app` bundles are treated as indivisible directories, and bundle contents are not emitted separately. A broad project build-root candidate becomes report-only in this profile so it cannot overlap the keep-newest plan. Eligible exact candidates are selected by the interactive final-confirmation flow and move only through the reviewed Trash gateway.
+
+## Native actions
+
+Native actions are isolated from Trash operations. Each declares a fixed executable, argv list, per-action process policy, risk explanation, affected state, and confirmation contract. Inspection actions are read-only; state-changing actions are non-undoable. v0.1 exposes these as reviewable plans but production `native-action run` fails closed before process launch because Darwin has no descriptor-bound `exec`; tests use an injected fake runner only. The [official VS Code CLI](https://code.visualstudio.com/docs/configure/command-line#_working-with-extensions) accepts a full extension ID for uninstall, not a version-specific uninstall; KeepItClean therefore keeps superseded-version findings report-only and exposes full-extension uninstall as a separate high-risk plan.
+
+The system portion of combined Clean is not a generic native action. Its only executable boundary is `/usr/bin/sudo -- /Library/PrivilegedHelperTools/com.minhnh510.keepitclean.helper` after root ownership/mode checks. The helper has a fixed command grammar and implements scanning/quarantine itself; it cannot run an arbitrary executable or accept an arbitrary filesystem root. Direct `keep system` subcommands remain available for scripting and recovery.
