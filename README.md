@@ -1,5 +1,7 @@
 # KeepItClean
 
+![KeepItClean interactive terminal dashboard](docs/images/keepitclean-home.png)
+
 **KeepItClean** is a safety-first macOS developer storage cleaner. Its executable is `keep`.
 
 It scans rebuildable caches and developer artifacts, explains risk and rebuild cost, creates an immutable cleanup plan, and moves reviewed files to Trash. The dashboard's single **Clean** flow combines normal, hardcore-retention, and optional system cleanup in one review. Developer data never needs `sudo`; allowlisted system cache/log leaves use a separately installed root-owned helper and protected quarantine. KeepItClean does not run a background agent, send telemetry, or treat an entire cache root as disposable.
