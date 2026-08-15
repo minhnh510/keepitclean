@@ -157,9 +157,16 @@ private func removeTemporaryRoot(_ root: URL) {
     let day = sessions.appendingPathComponent("2026/07/01", isDirectory: true)
     let invalidDay = sessions.appendingPathComponent("2026/13/40", isDirectory: true)
     let item = day.appendingPathComponent("rollout.jsonl")
+    let archives = root.appendingPathComponent(".codex/session-archives", isDirectory: true)
+    let archive = archives.appendingPathComponent("2026-through-07-01", isDirectory: true)
+    let invalidArchive = archives.appendingPathComponent("2026-through-13-40", isDirectory: true)
+    let archiveItem = archive.appendingPathComponent("old.jsonl")
     try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: invalidDay, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: invalidArchive, withIntermediateDirectories: true)
     try Data("history".utf8).write(to: item)
+    try Data("archived history".utf8).write(to: archiveItem)
 
     let validator = PathValidator(policy: PathValidationPolicy(
         homePath: root.path,
@@ -167,6 +174,7 @@ private func removeTemporaryRoot(_ root: URL) {
     ))
 
     #expect(try validator.validateExistingTarget(day.path).fileKind == .directory)
+    #expect(try validator.validateExistingTarget(archive.path).fileKind == .directory)
     #expect(throws: KeepItCleanError.self) {
         _ = try validator.validateExistingTarget(sessions.path)
     }
@@ -178,6 +186,15 @@ private func removeTemporaryRoot(_ root: URL) {
     }
     #expect(throws: KeepItCleanError.self) {
         _ = try validator.validateExistingTarget(invalidDay.path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(archives.path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(invalidArchive.path)
+    }
+    #expect(throws: KeepItCleanError.self) {
+        _ = try validator.validateExistingTarget(archiveItem.path)
     }
 }
 

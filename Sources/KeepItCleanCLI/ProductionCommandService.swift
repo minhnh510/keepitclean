@@ -554,7 +554,7 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
                 "exe:gradle", "exe:gradlew", "exe:sdkmanager",
                 "arg:org.gradle.launcher.daemon", "arg:/android studio.app/",
             ])
-        case "hardcore.codex-session-days", "hardcore.codex-corrupt-snapshots":
+        case "hardcore.codex-session-days", "hardcore.codex-session-archives", "hardcore.codex-corrupt-snapshots":
             processes.state(for: KnownProcessProbes.codex)
         case "hardcore.coresimulator-caches":
             processes.state(matching: [

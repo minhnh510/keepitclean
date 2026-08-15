@@ -378,6 +378,71 @@ public struct HardcoreCodexSessionRetentionAdapter: RuleAdapter, Sendable {
     }
 }
 
+/// Archived Codex session bundles are user data, not a generic cache.  Keep
+/// the namespace protected by default and offer only a complete, dated archive
+/// bundle after the same inactive-process and seven-day retention checks used
+/// for individual session-day buckets.
+public struct HardcoreCodexSessionArchiveRetentionAdapter: RuleAdapter, Sendable {
+    public let descriptor = RuleDescriptor(
+        id: "hardcore.codex-session-archives",
+        name: "Hardcore Codex archived-session retention",
+        category: "Hardcore / Codex history",
+        summary: "Keep the latest seven calendar days and offer older complete Codex archive bundles for explicit Trash review.",
+        explicitNonTargets: [
+            "archive bundles through the latest seven calendar days",
+            "all Codex archives while Codex is active or process state is unknown",
+            "individual files inside an archive bundle",
+            "sessions, SQLite, memories, credentials, config, skills, attachments, and worktrees",
+            "automatic selection or permanent deletion",
+        ]
+    )
+
+    private let fileSystem: any FileSystemReading
+    private let processes: any ProcessProbing
+
+    public init(fileSystem: any FileSystemReading, processes: any ProcessProbing) {
+        self.fileSystem = fileSystem
+        self.processes = processes
+    }
+
+    public func scan(request: ScanRequest) async throws -> [Candidate] {
+        guard request.isHardcore, request.deep else { return [] }
+        let archivesRoot = join(request.homePath, ".codex/session-archives")
+        guard fileSystem.fileExists(at: archivesRoot),
+              isInScope(archivesRoot, roots: request.roots)
+        else { return [] }
+
+        let cutoff = codexSessionCutoff(now: request.now)
+        let activeState = processes.state(matching: [
+            "exe:codex", "arg:/codex.app/", "arg:/library/application support/codex",
+            "arg:features.code_mode_host=true app-server",
+        ])
+        let archives = try fileSystem.immediateChildren(at: archivesRoot).compactMap {
+            path -> (path: String, through: Date)? in
+            guard (try? fileSystem.identity(at: path).fileKind) == .directory,
+                  let through = codexArchiveThroughDate(basename(path)),
+                  through < cutoff,
+                  !(try fileSystem.immediateChildren(at: path)).isEmpty
+            else { return nil }
+            return (path, through)
+        }
+
+        return try archives.map { archive in
+            try makeHardcoreCandidate(
+                descriptor: descriptor,
+                path: archive.path,
+                displayName: "Codex archive through \(codexDayFormatter.string(from: archive.through))",
+                evidence: "complete archived session bundle older than the seven-day retention window; it may contain unique history, so export is recommended before Trash",
+                risk: .high,
+                rebuildCost: .notApplicable,
+                activeState: activeState,
+                request: request,
+                fileSystem: fileSystem
+            )
+        }.sorted(by: candidatePathOrder)
+    }
+}
+
 public struct HardcoreCodexCorruptSnapshotAdapter: RuleAdapter, Sendable {
     public let descriptor = RuleDescriptor(
         id: "hardcore.codex-corrupt-snapshots",
@@ -1154,6 +1219,22 @@ private func codexSessionCutoff(now: Date) -> Date {
 
 private func sessionDate(year: String, month: String, day: String) -> Date? {
     codexDayFormatter.date(from: "\(year)-\(month)-\(day)")
+}
+
+private func codexArchiveThroughDate(_ name: String) -> Date? {
+    let parts = name.split(separator: "-", omittingEmptySubsequences: false)
+    guard parts.count == 4,
+          parts[1] == "through",
+          parts[0].count == 4,
+          parts[2].count == 2,
+          parts[3].count == 2,
+          [parts[0], parts[2], parts[3]].allSatisfy({ $0.allSatisfy(\.isNumber) })
+    else { return nil }
+    return sessionDate(
+        year: String(parts[0]),
+        month: String(parts[2]),
+        day: String(parts[3])
+    )
 }
 
 private func isNumericDirectory(

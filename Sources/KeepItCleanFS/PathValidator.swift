@@ -50,6 +50,7 @@ public struct PathValidationPolicy: Sendable {
             "\(homePath)/Library/Mail",
             "\(homePath)/Library/Messages",
             "\(homePath)/.codex/sessions",
+            "\(homePath)/.codex/session-archives",
             "\(homePath)/.codex/archived_sessions",
             "\(homePath)/.codex/sqlite",
             "\(homePath)/.codex/memories",
@@ -120,7 +121,7 @@ public struct PathValidator: Sendable {
         let isProtected = policy.protectedSubtrees.contains(where: {
             path == $0 || path.hasPrefix($0 + "/")
         })
-        guard !isProtected || isExactCodexSessionDayBucket(path) else {
+        guard !isProtected || isExactCodexRetentionBucket(path) else {
             throw KeepItCleanError.protectedPath(path)
         }
 
@@ -179,11 +180,15 @@ public struct PathValidator: Sendable {
         path != root && path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
     }
 
-    /// The session store remains protected by default. The only namespace
-    /// exception is one complete YYYY/MM/DD bucket, which a current hardcore
-    /// rule must still authorize and identity-bind before the gateway mutates.
-    /// Individual session files, year/month roots, and nested descendants stay
-    /// protected even when a plan is tampered with.
+    /// Codex history namespaces remain protected by default. The only
+    /// exceptions are one complete session-day bucket or one complete dated
+    /// archive bundle, which a current hardcore rule must still authorize and
+    /// identity-bind before the gateway mutates. Individual files and nested
+    /// descendants stay protected even when a plan is tampered with.
+    private func isExactCodexRetentionBucket(_ path: String) -> Bool {
+        isExactCodexSessionDayBucket(path) || isExactCodexArchiveBundle(path)
+    }
+
     private func isExactCodexSessionDayBucket(_ path: String) -> Bool {
         let root = "\(policy.homePath)/.codex/sessions/"
         guard path.hasPrefix(root) else { return false }
@@ -197,6 +202,29 @@ public struct PathValidator: Sendable {
               let year = Int(parts[0]),
               let month = Int(parts[1]),
               let day = Int(parts[2])
+        else { return false }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let date = calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: year,
+            month: month,
+            day: day
+        )) else { return false }
+        let roundTrip = calendar.dateComponents([.year, .month, .day], from: date)
+        return roundTrip.year == year && roundTrip.month == month && roundTrip.day == day
+    }
+
+    private func isExactCodexArchiveBundle(_ path: String) -> Bool {
+        let root = "\(policy.homePath)/.codex/session-archives/"
+        guard path.hasPrefix(root) else { return false }
+        let relative = String(path.dropFirst(root.count))
+        guard !relative.contains("/"),
+              let match = relative.wholeMatch(of: /^(\d{4})-through-(\d{2})-(\d{2})$/),
+              let year = Int(match.1),
+              let month = Int(match.2),
+              let day = Int(match.3)
         else { return false }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

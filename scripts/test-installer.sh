@@ -14,7 +14,7 @@ if [[ ! -x "$PROJECT_ROOT/.build/release/keep-privileged-helper" ]]; then
     exit 1
 fi
 [[ "$("$PROJECT_ROOT/.build/release/keep-privileged-helper" --version)" \
-    == "KeepItCleanPrivilegedHelper 0.1.0 protocol-1" ]]
+    == "KeepItCleanPrivilegedHelper 0.1.1 protocol-1" ]]
 bash -n "$PROJECT_ROOT/scripts/install-helper.sh"
 grep -q '^TARGET_PATH="\$TARGET_DIRECTORY/com.minhnh510.keepitclean.helper"$' \
     "$PROJECT_ROOT/scripts/install-helper.sh"
@@ -24,7 +24,7 @@ if rg -n '/usr/bin/sudo .*(rm|find|sh|bash)' "$PROJECT_ROOT/scripts/install-help
 fi
 
 PREFIX="$TEST_ROOT/installed" "$PROJECT_ROOT/scripts/install-local.sh"
-[[ "$("$TEST_ROOT/installed/bin/keep" --version)" == "KeepItClean 0.1.0" ]]
+[[ "$("$TEST_ROOT/installed/bin/keep" --version)" == "KeepItClean 0.1.1" ]]
 PREFIX="$TEST_ROOT/installed" "$PROJECT_ROOT/scripts/uninstall-local.sh"
 [[ ! -e "$TEST_ROOT/installed/bin/keep" ]]
 

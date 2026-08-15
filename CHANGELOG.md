@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 - 2026-08-15
+
+- Add hardcore seven-day retention for complete dated Codex session archives (`~/.codex/session-archives/YYYY-through-MM-DD`).
+- Keep the archive namespace protected by default: only a complete dated bundle can be reviewed, only with Codex inactive, and it is revalidated before Trash apply.
+- Document the archive retention boundary across the user rules and security design.
+
 ## 0.1.0 - 2026-08-14
 
 First public preview of KeepItClean.

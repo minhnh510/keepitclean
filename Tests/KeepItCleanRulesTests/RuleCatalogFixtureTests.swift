@@ -503,6 +503,8 @@ import Testing
     let fixture = try FixtureHome()
     try fixture.file(".codex/sessions/2026/07/01/old.jsonl", contents: "old history")
     try fixture.file(".codex/sessions/2026/08/10/recent.jsonl", contents: "recent history")
+    try fixture.file(".codex/session-archives/2026-through-07-01/old.jsonl", contents: "old archive")
+    try fixture.file(".codex/session-archives/2026-through-08-10/recent.jsonl", contents: "recent archive")
     try fixture.file(".codex.corrupt.20260527-115342/sessions/recovery.jsonl")
     try fixture.file(".codex.corrupt.20260813-115342/sessions/recovery.jsonl")
     try fixture.file(".codex.corrupt.unknown/sessions/recovery.jsonl")
@@ -532,6 +534,9 @@ import Testing
         HardcoreCodexSessionRetentionAdapter(
             fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
         ),
+        HardcoreCodexSessionArchiveRetentionAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
+        ),
         HardcoreCodexCorruptSnapshotAdapter(
             fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.inactive)
         ),
@@ -545,10 +550,12 @@ import Testing
     let candidates = try await scanAdapters(adapters, request: request)
     let paths = Set(candidates.map(\.path))
 
-    #expect(candidates.count == 6)
+    #expect(candidates.count == 7)
     #expect(candidates.allSatisfy { $0.actionKind == .trash && !$0.defaultSelected })
     #expect(paths.contains(fixture.url.appendingPathComponent(".codex/sessions/2026/07/01").path))
     #expect(!paths.contains(fixture.url.appendingPathComponent(".codex/sessions/2026/08/10").path))
+    #expect(paths.contains(fixture.url.appendingPathComponent(".codex/session-archives/2026-through-07-01").path))
+    #expect(!paths.contains(fixture.url.appendingPathComponent(".codex/session-archives/2026-through-08-10").path))
     #expect(paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.20260527-115342").path))
     #expect(!paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.20260813-115342").path))
     #expect(!paths.contains(fixture.url.appendingPathComponent(".codex.corrupt.unknown").path))
@@ -565,6 +572,9 @@ import Testing
             fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
         ) as any RuleAdapter,
         HardcoreCodexSessionRetentionAdapter(
+            fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
+        ) as any RuleAdapter,
+        HardcoreCodexSessionArchiveRetentionAdapter(
             fileSystem: FixtureFileSystem(), processes: FixedProcessProbe(.active)
         ) as any RuleAdapter,
         HardcoreCodexCorruptSnapshotAdapter(

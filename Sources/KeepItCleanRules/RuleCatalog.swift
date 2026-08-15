@@ -23,6 +23,7 @@ public struct RuleCatalog: Sendable {
             HardcoreNDKVersionAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreAndroidPlatformAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreCodexSessionRetentionAdapter(fileSystem: fileSystem, processes: processes),
+            HardcoreCodexSessionArchiveRetentionAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreCodexCorruptSnapshotAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreCoreSimulatorCacheAdapter(fileSystem: fileSystem, processes: processes),
             HardcoreAVDSnapshotAdapter(fileSystem: fileSystem, processes: processes),

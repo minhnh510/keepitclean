@@ -646,6 +646,51 @@ private func tamperStoredPlan(_ plan: CleanupPlan, home: MarkerGuardedHome) thro
     #expect(FileManager.default.fileExists(atPath: recentDay.path))
 }
 
+@Test func hardcoreCodexOldArchiveAppliesOnlyThroughReviewedExactRule() async throws {
+    let home = try MarkerGuardedHome()
+    defer { try? home.remove() }
+    let oldArchive = home.url.appendingPathComponent(
+        ".codex/session-archives/2026-through-07-01", isDirectory: true
+    )
+    let recentArchive = home.url.appendingPathComponent(
+        ".codex/session-archives/2026-through-08-10", isDirectory: true
+    )
+    try FileManager.default.createDirectory(at: oldArchive, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: recentArchive, withIntermediateDirectories: true)
+    try Data("old archive".utf8).write(to: oldArchive.appendingPathComponent("old.jsonl"))
+    try Data("recent archive".utf8).write(to: recentArchive.appendingPathComponent("recent.jsonl"))
+
+    let service = fixtureService(
+        home: home,
+        processSnapshotProvider: SequencedProcessSnapshotProvider([unrelatedProcessSnapshot]),
+        nativeRunner: RecordingNativeRunner()
+    )
+    let scanned = try await service.scan(
+        roots: [home.url.path],
+        deep: true,
+        hardcore: true
+    )
+    let candidate = try #require(scanned.plan.items.first {
+        $0.candidate.ruleID == "hardcore.codex-session-archives"
+            && $0.candidate.path.hasSuffix("/.codex/session-archives/2026-through-07-01")
+    }?.candidate)
+    #expect(candidate.actionKind == .trash)
+    #expect(!scanned.plan.items.contains {
+        $0.candidate.ruleID == "hardcore.codex-session-archives"
+            && $0.candidate.path.hasSuffix("/.codex/session-archives/2026-through-08-10")
+    })
+
+    let reviewed = TUIAdapter.plan(scanned.plan, selecting: [candidate.id])
+    _ = try service.save(plan: reviewed)
+    let operation = try await service.applyTrash(plan: reviewed)
+
+    #expect(operation.state == .completed)
+    #expect(operation.items.count == 1)
+    #expect(operation.items.first?.status == .movedToTrash)
+    #expect(!FileManager.default.fileExists(atPath: oldArchive.path))
+    #expect(FileManager.default.fileExists(atPath: recentArchive.path))
+}
+
 @Test func statefulNativePlansFailClosedWhenOwningToolsAreActive() throws {
     let scenarios: [(actionID: String, active: ProcessRecord)] = [
         (
