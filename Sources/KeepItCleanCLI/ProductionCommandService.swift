@@ -266,7 +266,7 @@ struct ProductionCommandService: KeepCommandServing, Sendable {
         checks.append(DoctorCheck(
             id: "privileges",
             status: "ok",
-            message: "No daemon, privileged helper, or sudo integration is installed."
+            message: "User cleanup runs without sudo; optional system-helper readiness is reported separately."
         ))
         return checks
     }

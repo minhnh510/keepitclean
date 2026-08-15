@@ -226,10 +226,10 @@ struct CleanCommand: AsyncParsableCommand {
         )
         switch result {
         case .cancelled:
-            CLIOutput.text("Review cancelled. No files were changed.")
+            CLIOutput.notice("Cancelled", "Review was cancelled. No files were changed.", tone: .muted)
         case let .accepted(itemIDs):
             guard !itemIDs.isEmpty else {
-                CLIOutput.text("No candidates selected. No files were changed.")
+                CLIOutput.notice("Review", "No candidates were selected. No files were changed.", tone: .muted)
                 return
             }
             let reviewed = TUIAdapter.plan(original, selecting: itemIDs)
@@ -240,7 +240,7 @@ struct CleanCommand: AsyncParsableCommand {
             )
         case let .applyRequested(itemIDs):
             guard !itemIDs.isEmpty else {
-                CLIOutput.text("No candidates selected. No files were changed.")
+                CLIOutput.notice("Review", "No candidates were selected. No files were changed.", tone: .muted)
                 return
             }
             let reviewed = TUIAdapter.plan(original, selecting: itemIDs)

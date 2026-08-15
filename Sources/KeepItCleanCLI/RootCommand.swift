@@ -29,7 +29,7 @@ struct Keep: AsyncParsableCommand {
         let service = KeepRuntimeFactory.make()
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         guard let choice = try KeepItCleanHomeRunner().choose() else {
-            CLIOutput.text("KeepItClean closed. No files were changed.")
+            CLIOutput.notice("Closed", "No files were changed.", tone: .muted)
             return
         }
         switch choice {
@@ -44,14 +44,13 @@ struct Keep: AsyncParsableCommand {
             }
             HumanOutput.scan(planned, label: "Analysis complete (read-only)")
         case .doctor:
-            let checks = await service.doctor()
-            for check in checks {
-                CLIOutput.text("[\(check.status)] \(check.id): \(check.message)")
-            }
+            var checks = await service.doctor()
+            checks.append(PrivilegedHelperClient().doctorCheck())
+            HumanOutput.doctor(checks)
         case .history:
             let records = try service.history(limit: 20)
             if records.isEmpty {
-                CLIOutput.text("No KeepItClean operations recorded.")
+                HumanOutput.emptyHistory()
             } else {
                 records.forEach(HumanOutput.operation)
             }
@@ -75,7 +74,7 @@ struct Keep: AsyncParsableCommand {
             system: systemResult
         )
         guard !initialState.selectedItemIDs.isEmpty else {
-            CLIOutput.text("No eligible cleanup candidates were found. No files were changed.")
+            CLIOutput.notice("Clean", "No eligible candidates were found. No files were changed.", tone: .muted)
             return
         }
         let result = try KeepItCleanTUIRunner().run(
@@ -83,7 +82,7 @@ struct Keep: AsyncParsableCommand {
         )
         switch result {
         case .cancelled:
-            CLIOutput.text("Cleanup cancelled. No files were changed.")
+            CLIOutput.notice("Cancelled", "Cleanup was cancelled. No files were changed.", tone: .muted)
         case let .accepted(ids):
             try saveUnifiedPreview(
                 selectedItemIDs: ids,
@@ -150,7 +149,7 @@ struct Keep: AsyncParsableCommand {
                     + "--confirm \(SystemCleanupEngine.applyToken(for: id))"
             )
         }
-        CLIOutput.text("Nothing was changed.")
+        CLIOutput.notice("Preview", "Nothing was changed.", tone: .muted)
     }
 
     private func applyUnifiedCleanup(
@@ -189,7 +188,11 @@ struct Keep: AsyncParsableCommand {
         }
 
         if failures.isEmpty {
-            CLIOutput.text("All-in-one cleanup completed. Trash/quarantine items remain undoable.")
+            CLIOutput.notice(
+                "Complete",
+                "All-in-one cleanup finished. Trash and quarantine items remain undoable.",
+                tone: .success
+            )
         } else {
             failures.forEach(CLIOutput.warning)
             throw KeepItCleanError.io("All-in-one cleanup completed partially; review the operation IDs above.")

@@ -73,7 +73,7 @@ let package = Package(
         ),
         .testTarget(
             name: "KeepItCleanCLITests",
-            dependencies: ["KeepItCleanCLI", "KeepItCleanCore", "KeepItCleanFS", "KeepItCleanSystem"]
+            dependencies: ["KeepItCleanCLI", "KeepItCleanCore", "KeepItCleanFS", "KeepItCleanSystem", "KeepItCleanTUI"]
         ),
         .testTarget(
             name: "KeepItCleanSystemTests",

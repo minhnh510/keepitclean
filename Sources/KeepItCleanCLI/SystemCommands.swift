@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import KeepItCleanCore
 import KeepItCleanSystem
+import KeepItCleanTUI
 
 struct SystemCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -113,32 +114,76 @@ struct SystemDoctorCommand: ParsableCommand {
     )
 
     mutating func run() {
-        CLIOutput.text(PrivilegedHelperClient().doctor())
+        HumanOutput.doctor([PrivilegedHelperClient().doctorCheck()])
     }
 }
 
 enum SystemHumanOutput {
     static func scan(_ result: SystemCleanupScanResult) {
-        CLIOutput.text("System cache preview: \(result.plan.candidates.count) exact files")
-        CLIOutput.text("Potential quarantine: \(KeepFormatting.bytes(result.plan.reclaimableBytes))")
-        CLIOutput.text("Plan: \(result.plan.id.uuidString) (expires in 15 minutes)")
+        let renderer = TUIConsoleRenderer.terminal()
+        var lines = [
+            TUIConsoleLine("✓ Privileged preview complete", tone: .success),
+            TUIConsoleLine("Fixed allowlist · exact root-owned leaves only", tone: .muted),
+            TUIConsoleLine(""),
+            TUIConsoleLine("CANDIDATES   \(result.plan.candidates.count)"),
+            TUIConsoleLine("QUARANTINE   \(KeepFormatting.bytes(result.plan.reclaimableBytes))", tone: .success),
+            TUIConsoleLine("PLAN ID      \(result.plan.id.uuidString)", tone: .muted),
+            TUIConsoleLine("EXPIRES      15 minutes", tone: .warning),
+            TUIConsoleLine(""),
+            TUIConsoleLine(
+                "APPLY        keep system apply \(result.plan.id.uuidString) --confirm \(SystemCleanupEngine.applyToken(for: result.plan.id))",
+                tone: .accent
+            ),
+        ]
+        if result.plan.candidates.isEmpty {
+            lines.append(TUIConsoleLine("No eligible system-cache leaves were found.", tone: .muted))
+        }
+        CLIOutput.raw(renderer.card(
+            title: "System preview",
+            badge: "READ-ONLY",
+            lines: lines,
+            footer: TUIConsoleLine("No system files moved · apply uses protected quarantine", tone: .muted)
+        ))
         result.warnings.forEach(CLIOutput.warning)
-        CLIOutput.text(
-            "Apply to quarantine: keep system apply \(result.plan.id.uuidString) --confirm \(SystemCleanupEngine.applyToken(for: result.plan.id))"
-        )
     }
 
     static func operation(_ operation: SystemCleanupOperation) {
-        CLIOutput.text("System operation \(operation.id.uuidString): \(operation.state.rawValue)")
+        let renderer = TUIConsoleRenderer.terminal()
         let successful = operation.items.filter {
             $0.status == .quarantined || $0.status == .restored || $0.status == .finalized
         }.count
-        CLIOutput.text("Items: \(successful)/\(operation.items.count)")
-        if operation.state == .quarantined || operation.state == .partial {
-            CLIOutput.text("Undo: keep system undo \(operation.id.uuidString)")
-            CLIOutput.text(
-                "Permanently reclaim: keep system finalize \(operation.id.uuidString) --confirm \(SystemCleanupEngine.finalizeToken(for: operation.id))"
-            )
+        var lines = [
+            TUIConsoleLine("\(operation.action.rawValue.capitalized) · \(successful)/\(operation.items.count) completed"),
+            TUIConsoleLine("ID  \(operation.id.uuidString)", tone: .muted),
+            TUIConsoleLine(""),
+        ]
+        for item in operation.items.prefix(12) {
+            let tone: TUIConsoleTone = item.status == .failed ? .danger
+                : item.status == .pending ? .warning : .success
+            let glyph = item.status == .failed ? "×" : item.status == .pending ? "◐" : "✓"
+            lines.append(TUIConsoleLine(
+                "\(glyph) \(item.status.rawValue.capitalized)  \(renderer.compactPath(item.originalPath, maxWidth: renderer.width - 16))",
+                tone: tone
+            ))
         }
+        if operation.items.count > 12 {
+            lines.append(TUIConsoleLine("… \(operation.items.count - 12) more items", tone: .muted))
+        }
+        var footer = "Root-private journal preserved"
+        if operation.state == .quarantined || operation.state == .partial {
+            lines.append(TUIConsoleLine(""))
+            lines.append(TUIConsoleLine("UNDO      keep system undo \(operation.id.uuidString)", tone: .accent))
+            lines.append(TUIConsoleLine(
+                "FINALIZE  keep system finalize \(operation.id.uuidString) --confirm \(SystemCleanupEngine.finalizeToken(for: operation.id))",
+                tone: .warning
+            ))
+            footer = "Undo available · finalize is permanent"
+        }
+        CLIOutput.raw(renderer.card(
+            title: "System operation",
+            badge: operation.state.rawValue.uppercased(),
+            lines: lines,
+            footer: TUIConsoleLine(footer, tone: operation.state == .failed ? .danger : .success)
+        ))
     }
 }

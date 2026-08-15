@@ -11,6 +11,7 @@ First public preview of KeepItClean.
 - Conservative rules for Gradle, Android/NDK, Kotlin/Native, LLDB, CocoaPods, Maven, VS Code, generated project artifacts, and protected Codex state.
 - Seven-day Gradle transform retention and reference-aware toolchain retention.
 - Optional root-owned helper for a fixed allowlist of old system cache/log leaves, using protected quarantine and separate undo/finalize.
+- Unified responsive console presentation for scan progress, analysis, doctor, history, cleanup plans, and system operations.
 - JSON output, shell completions, doctor/history/rules commands, universal release archive, and SHA-256 checksum.
 
 The downloadable binaries are ad-hoc signed and not Apple-notarized. Native-action execution remains disabled in v0.1.0 because macOS does not provide descriptor-bound execution for user-installed tools.

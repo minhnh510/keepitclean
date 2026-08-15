@@ -78,7 +78,7 @@ struct HistoryCommand: ParsableCommand {
         if json {
             try CLIOutput.json(command: "history", data: records)
         } else if records.isEmpty {
-            CLIOutput.text("No KeepItClean operations recorded.")
+            HumanOutput.emptyHistory()
         } else {
             records.forEach(HumanOutput.operation)
         }

@@ -109,6 +109,7 @@ private final class ProgressDisplay {
     private let activity: String
     private let success: String
     private let failure: String
+    private lazy var renderer = TUIConsoleRenderer.terminal()
 
     init(
         phase: String,
@@ -129,30 +130,38 @@ private final class ProgressDisplay {
     }
 
     func begin() {
-        write("\u{001B}[1;36m╭─ KeepItClean ─ \(phase)\u{001B}[0m\n")
-        write("│ \u{001B}[1m\(title)\u{001B}[0m\n")
-        write("│ \u{001B}[2m\(detail)\u{001B}[0m\n")
-        write("╰─ \(boundary)\n")
+        write(renderer.card(
+            title: "Progress",
+            badge: phase,
+            lines: [
+                TUIConsoleLine(title, tone: .normal),
+                TUIConsoleLine(detail, tone: .muted),
+            ],
+            footer: TUIConsoleLine(boundary, tone: .muted)
+        ))
     }
 
     func update(frame: Int, elapsed: TimeInterval) {
         let glyph = Self.frames[frame % Self.frames.count]
         write(
-            "\r\u{001B}[2K  \u{001B}[1;36m\(glyph)\u{001B}[0m "
+            "\r\u{001B}[2K  \(renderer.style(glyph, .accent)) "
                 + "\(activity)  "
-                + "\u{001B}[2m\(elapsedLabel(elapsed))\u{001B}[0m"
+                + renderer.style(elapsedLabel(elapsed), .muted)
         )
     }
 
     func finish(elapsed: TimeInterval) {
-        write(
-            "\r\u{001B}[2K  \u{001B}[1;32m✓\u{001B}[0m \(success)  "
-                + "\u{001B}[2m\(elapsedLabel(elapsed))\u{001B}[0m\n"
-        )
+        write("\r\u{001B}[2K")
+        write(renderer.notice(
+            title: success,
+            message: elapsedLabel(elapsed),
+            tone: .success
+        ))
     }
 
     func fail(_ message: String) {
-        write("\r\u{001B}[2K  \u{001B}[1;31m×\u{001B}[0m \(failure): \(message)\n")
+        write("\r\u{001B}[2K")
+        write(renderer.notice(title: failure, message: message, tone: .danger))
     }
 
     private func elapsedLabel(_ elapsed: TimeInterval) -> String {

@@ -32,13 +32,12 @@ struct DoctorCommand: AsyncParsableCommand {
     var json = false
 
     mutating func run() async throws {
-        let checks = await KeepRuntimeFactory.make().doctor()
+        var checks = await KeepRuntimeFactory.make().doctor()
+        checks.append(PrivilegedHelperClient().doctorCheck())
         if json {
             try CLIOutput.json(command: "doctor", data: checks)
         } else {
-            for check in checks {
-                CLIOutput.text("[\(check.status)] \(check.id): \(check.message)")
-            }
+            HumanOutput.doctor(checks)
         }
     }
 }

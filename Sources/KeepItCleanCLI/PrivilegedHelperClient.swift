@@ -40,11 +40,31 @@ struct PrivilegedHelperClient: Sendable {
     }
 
     func doctor() -> String {
+        let check = doctorCheck()
+        return check.status == "ok"
+            ? "ready: root-owned helper installed at \(helperPath)"
+            : "unavailable: \(check.message)"
+    }
+
+    func doctorCheck() -> DoctorCheck {
         do {
+            try validateRootOwnedExecutable(sudoPath)
+            try validateRootOwnedDirectory("/usr/bin")
             try validateRootOwnedExecutable(helperPath)
-            return "ready: root-owned helper installed at \(helperPath)"
+            try validateRootOwnedDirectory(
+                URL(fileURLWithPath: helperPath).deletingLastPathComponent().path
+            )
+            return DoctorCheck(
+                id: "system-helper",
+                status: "ok",
+                message: "Root-owned helper is installed and verified at \(helperPath)."
+            )
         } catch {
-            return "unavailable: \(error.localizedDescription)"
+            return DoctorCheck(
+                id: "system-helper",
+                status: "optional",
+                message: "Optional system cleanup is unavailable. Run `make install-helper` from the source directory to enable it."
+            )
         }
     }
 
